@@ -334,7 +334,7 @@ def make_dockerfile(
             install
         )
     else:
-        install = ["datasette"] + list(install)
+        install = ["https://github.com/fgregg/datasette/archive/refs/heads/publish.zip"] + list(install)
 
     apt_get_extras_ = []
     apt_get_extras_.extend(apt_get_extras)
