@@ -39,7 +39,7 @@ class Database:
         self.memory_name = memory_name
         if memory_name is not None:
             self.is_memory = True
-        self.hash = None
+        self.cached_hash = None
         self.cached_size = None
         self._cached_table_counts = None
         self._write_thread = None
@@ -47,10 +47,6 @@ class Database:
         # These are used when in non-threaded mode:
         self._read_connection = None
         self._write_connection = None
-        if not self.is_mutable and not self.is_memory:
-            p = Path(path)
-            self.hash = inspect_hash(p)
-            self.cached_size = p.stat().st_size
 
     @property
     def cached_table_counts(self):
@@ -263,13 +259,33 @@ class Database:
         return results
 
     @property
+    def hash(self):
+        if self.cached_hash is not None:
+            return self.cached_hash
+        elif self.is_mutable or self.is_memory:
+            return None
+        elif self.ds.inspect_data and self.ds.inspect_data.get(self.name):
+            self.cached_hash = self.ds.inspect_data[self.name]["hash"]
+            return self.cached_hash
+        else:
+            p = Path(self.path)
+            self.cached_hash = inspect_hash(p)
+            return self.cached_hash
+
+    @property
     def size(self):
-        if self.is_memory:
-            return 0
         if self.cached_size is not None:
             return self.cached_size
-        else:
+        elif self.is_memory:
+            return 0
+        elif self.is_mutable:
             return Path(self.path).stat().st_size
+        elif self.ds.inspect_data and self.ds.inspect_data.get(self.name):
+            self.cached_size = self.ds.inspect_data[self.name]["size"]
+            return self.cached_size
+        else:
+            self.cached_size = Path(self.path).stat().st_size
+            return self.cached_size
 
     async def table_counts(self, limit=10):
         if not self.is_mutable and self.cached_table_counts is not None:
@@ -476,7 +492,10 @@ class WriteTask:
 
 
 class QueryInterrupted(Exception):
-    pass
+    def __init__(self, e, sql, params):
+        self.e = e
+        self.sql = sql
+        self.params = params
 
 
 class MultipleValues(Exception):
