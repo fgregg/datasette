@@ -73,6 +73,10 @@ This will output some details about the new deployment, including a URL like thi
 
 You can specify a custom app name by passing ``-n my-app-name`` to the publish command. This will also allow you to overwrite an existing app.
 
+Rather than deploying directly you can use the ``--generate-dir`` option to output the files that would be deployed to a directory::
+
+    datasette publish heroku mydatabase.db --generate-dir=/tmp/deploy-this-to-heroku
+
 See :ref:`cli_help_publish_heroku___help` for the full list of options for this command.
 
 .. _publish_vercel:
@@ -146,7 +150,7 @@ Here's example output for the package command::
 
     $ datasette package parlgov.db --extra-options="--setting sql_time_limit_ms 2500"
     Sending build context to Docker daemon  4.459MB
-    Step 1/7 : FROM python:3.10.6-slim-bullseye
+    Step 1/7 : FROM python:3.11.0-slim-bullseye
      ---> 79e1dc9af1c1
     Step 2/7 : COPY . /app
      ---> Using cache

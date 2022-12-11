@@ -28,9 +28,10 @@ from datasette.utils import (
     urlsafe_components,
     value_as_boolean,
 )
-from datasette.utils.asgi import BadRequest, NotFound
+from datasette.utils.asgi import BadRequest, Forbidden, NotFound, Response
 from datasette.filters import Filters
-from .base import DataView, DatasetteError, ureg
+import sqlite_utils
+from .base import BaseView, DataView, DatasetteError, ureg, _error
 from .database import QueryView
 
 LINK_WITH_LABEL = (
@@ -92,26 +93,79 @@ class TableView(DataView):
         return expandables
 
     async def post(self, request):
-        database_route = tilde_decode(request.url_vars["database"])
+        from datasette.app import TableNotFound
+
         try:
-            db = self.ds.get_database(route=database_route)
-        except KeyError:
-            raise NotFound("Database not found: {}".format(database_route))
-        database_name = db.name
-        table_name = tilde_decode(request.url_vars["table"])
-        # Handle POST to a canned query
-        canned_query = await self.ds.get_canned_query(
-            database_name, table_name, request.actor
+            resolved = await self.ds.resolve_table(request)
+        except TableNotFound as e:
+            # Was this actually a canned query?
+            canned_query = await self.ds.get_canned_query(
+                e.database_name, e.table, request.actor
+            )
+            if canned_query:
+                # Handle POST to a canned query
+                return await QueryView(self.ds).data(
+                    request,
+                    canned_query["sql"],
+                    metadata=canned_query,
+                    editable=False,
+                    canned_query=e.table,
+                    named_parameters=canned_query.get("params"),
+                    write=bool(canned_query.get("write")),
+                )
+
+        # Handle POST to a table
+        return await self.table_post(
+            request, resolved.db, resolved.db.name, resolved.table
         )
-        assert canned_query, "You may only POST to a canned query"
-        return await QueryView(self.ds).data(
-            request,
-            canned_query["sql"],
-            metadata=canned_query,
-            editable=False,
-            canned_query=table_name,
-            named_parameters=canned_query.get("params"),
-            write=bool(canned_query.get("write")),
+
+    async def table_post(self, request, db, database_name, table_name):
+        # Must have insert-row permission
+        if not await self.ds.permission_allowed(
+            request.actor, "insert-row", resource=(database_name, table_name)
+        ):
+            raise Forbidden("Permission denied")
+        if request.headers.get("content-type") != "application/json":
+            # TODO: handle form-encoded data
+            raise BadRequest("Must send JSON data")
+        data = json.loads(await request.post_body())
+        if "insert" not in data:
+            raise BadRequest('Must send a "insert" key containing a dictionary')
+        row = data["insert"]
+        if not isinstance(row, dict):
+            raise BadRequest("insert must be a dictionary")
+        # Verify all columns exist
+        columns = await db.table_columns(table_name)
+        pks = await db.primary_keys(table_name)
+        for key in row:
+            if key not in columns:
+                raise BadRequest("Column not found: {}".format(key))
+            if key in pks:
+                raise BadRequest(
+                    "Cannot insert into primary key column: {}".format(key)
+                )
+        # Perform the insert
+        sql = "INSERT INTO [{table}] ({columns}) VALUES ({values})".format(
+            table=escape_sqlite(table_name),
+            columns=", ".join(escape_sqlite(c) for c in row),
+            values=", ".join("?" for c in row),
+        )
+        cursor = await db.execute_write(sql, list(row.values()))
+        # Return the new row
+        rowid = cursor.lastrowid
+        new_row = (
+            await db.execute(
+                "SELECT * FROM [{table}] WHERE rowid = ?".format(
+                    table=escape_sqlite(table_name)
+                ),
+                [rowid],
+            )
+        ).first()
+        return Response.json(
+            {
+                "inserted_row": dict(new_row),
+            },
+            status=201,
         )
 
     async def columns_to_select(self, table_columns, pks, request):
@@ -164,12 +218,31 @@ class TableView(DataView):
         _next=None,
         _size=None,
     ):
-        database_route = tilde_decode(request.url_vars["database"])
-        table_name = tilde_decode(request.url_vars["table"])
+        from datasette.app import TableNotFound
+
         try:
-            db = self.ds.get_database(route=database_route)
-        except KeyError:
-            raise NotFound("Database not found: {}".format(database_route))
+            resolved = await self.ds.resolve_table(request)
+        except TableNotFound as e:
+            # Was this actually a canned query?
+            canned_query = await self.ds.get_canned_query(
+                e.database_name, e.table, request.actor
+            )
+            # If this is a canned query, not a table, then dispatch to QueryView instead
+            if canned_query:
+                return await QueryView(self.ds).data(
+                    request,
+                    canned_query["sql"],
+                    metadata=canned_query,
+                    editable=False,
+                    canned_query=e.table,
+                    named_parameters=canned_query.get("params"),
+                    write=bool(canned_query.get("write")),
+                )
+            else:
+                raise
+
+        table_name = resolved.table
+        db = resolved.db
         database_name = db.name
 
         # For performance profiling purposes, ?_noparallel=1 turns off asyncio.gather
@@ -186,21 +259,6 @@ class TableView(DataView):
             _gather_sequential if request.args.get("_noparallel") else _gather_parallel
         )
 
-        # If this is a canned query, not a table, then dispatch to QueryView instead
-        canned_query = await self.ds.get_canned_query(
-            database_name, table_name, request.actor
-        )
-        if canned_query:
-            return await QueryView(self.ds).data(
-                request,
-                canned_query["sql"],
-                metadata=canned_query,
-                editable=False,
-                canned_query=table_name,
-                named_parameters=canned_query.get("params"),
-                write=bool(canned_query.get("write")),
-            )
-
         is_view, table_exists = map(
             bool,
             await gather(
@@ -213,25 +271,23 @@ class TableView(DataView):
             raise NotFound(f"Table not found: {table_name}")
 
         # Ensure user has permission to view this table
-        await self.ds.ensure_permissions(
+        visible, private = await self.ds.check_visibility(
             request.actor,
-            [
+            permissions=[
                 ("view-table", (database_name, table_name)),
                 ("view-database", database_name),
                 "view-instance",
             ],
         )
-
-        private = not await self.ds.permission_allowed(
-            None, "view-table", (database_name, table_name), default=True
-        )
+        if not visible:
+            raise Forbidden("You do not have permission to view this table")
 
         # Handle ?_filter_column and redirect, if present
         redirect_params = filters_should_redirect(request.args)
         if redirect_params:
             return self.redirect(
                 request,
-                path_with_added_args(request, redirect_params),
+                self.ds.urls.path(path_with_added_args(request, redirect_params)),
                 forward_querystring=False,
             )
 
@@ -239,13 +295,15 @@ class TableView(DataView):
         if "_sort_by_desc" in request.args:
             return self.redirect(
                 request,
-                path_with_added_args(
-                    request,
-                    {
-                        "_sort_desc": request.args.get("_sort"),
-                        "_sort_by_desc": None,
-                        "_sort": None,
-                    },
+                self.ds.urls.path(
+                    path_with_added_args(
+                        request,
+                        {
+                            "_sort_desc": request.args.get("_sort"),
+                            "_sort_by_desc": None,
+                            "_sort": None,
+                        },
+                    )
                 ),
                 forward_querystring=False,
             )
@@ -817,21 +875,6 @@ class TableView(DataView):
         )
 
 
-async def _sql_params_pks(db, table, pk_values):
-    pks = await db.primary_keys(table)
-    use_rowid = not pks
-    select = "*"
-    if use_rowid:
-        select = "rowid, *"
-        pks = ["rowid"]
-    wheres = [f'"{pk}"=:p{i}' for i, pk in enumerate(pks)]
-    sql = f"select {select} from {escape_sqlite(table)} where {' AND '.join(wheres)}"
-    params = {}
-    for i, pk_value in enumerate(pk_values):
-        params[f"p{i}"] = pk_value
-    return sql, params, pks
-
-
 async def display_columns_and_rows(
     datasette,
     database_name,
@@ -1023,3 +1066,269 @@ async def display_columns_and_rows(
             }
         columns = [first_column] + columns
     return columns, cell_rows
+
+
+class TableInsertView(BaseView):
+    name = "table-insert"
+
+    def __init__(self, datasette):
+        self.ds = datasette
+
+    async def _validate_data(self, request, db, table_name, pks, upsert):
+        errors = []
+
+        pks_list = []
+        if isinstance(pks, str):
+            pks_list = [pks]
+        else:
+            pks_list = list(pks)
+
+        if not pks_list:
+            pks_list = ["rowid"]
+
+        def _errors(errors):
+            return None, errors, {}
+
+        if request.headers.get("content-type") != "application/json":
+            # TODO: handle form-encoded data
+            return _errors(["Invalid content-type, must be application/json"])
+        body = await request.post_body()
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError as e:
+            return _errors(["Invalid JSON: {}".format(e)])
+        if not isinstance(data, dict):
+            return _errors(["JSON must be a dictionary"])
+        keys = data.keys()
+
+        # keys must contain "row" or "rows"
+        if "row" not in keys and "rows" not in keys:
+            return _errors(['JSON must have one or other of "row" or "rows"'])
+        rows = []
+        if "row" in keys:
+            if "rows" in keys:
+                return _errors(['Cannot use "row" and "rows" at the same time'])
+            row = data["row"]
+            if not isinstance(row, dict):
+                return _errors(['"row" must be a dictionary'])
+            rows = [row]
+            data["return"] = True
+        else:
+            rows = data["rows"]
+        if not isinstance(rows, list):
+            return _errors(['"rows" must be a list'])
+        for row in rows:
+            if not isinstance(row, dict):
+                return _errors(['"rows" must be a list of dictionaries'])
+
+        # Does this exceed max_insert_rows?
+        max_insert_rows = self.ds.setting("max_insert_rows")
+        if len(rows) > max_insert_rows:
+            return _errors(
+                ["Too many rows, maximum allowed is {}".format(max_insert_rows)]
+            )
+
+        # Validate other parameters
+        extras = {
+            key: value for key, value in data.items() if key not in ("row", "rows")
+        }
+        valid_extras = {"return", "ignore", "replace"}
+        invalid_extras = extras.keys() - valid_extras
+        if invalid_extras:
+            return _errors(
+                ['Invalid parameter: "{}"'.format('", "'.join(sorted(invalid_extras)))]
+            )
+        if extras.get("ignore") and extras.get("replace"):
+            return _errors(['Cannot use "ignore" and "replace" at the same time'])
+
+        # Validate columns of each row
+        columns = set(await db.table_columns(table_name))
+        columns.update(pks_list)
+
+        for i, row in enumerate(rows):
+            if upsert:
+                # It MUST have the primary key
+                missing_pks = [pk for pk in pks_list if pk not in row]
+                if missing_pks:
+                    errors.append(
+                        'Row {} is missing primary key column(s): "{}"'.format(
+                            i, '", "'.join(missing_pks)
+                        )
+                    )
+            invalid_columns = set(row.keys()) - columns
+            if invalid_columns:
+                errors.append(
+                    "Row {} has invalid columns: {}".format(
+                        i, ", ".join(sorted(invalid_columns))
+                    )
+                )
+        if errors:
+            return _errors(errors)
+        return rows, errors, extras
+
+    async def post(self, request, upsert=False):
+        try:
+            resolved = await self.ds.resolve_table(request)
+        except NotFound as e:
+            return _error([e.args[0]], 404)
+        db = resolved.db
+        database_name = db.name
+        table_name = resolved.table
+
+        # Table must exist (may handle table creation in the future)
+        db = self.ds.get_database(database_name)
+        if not await db.table_exists(table_name):
+            return _error(["Table not found: {}".format(table_name)], 404)
+
+        if upsert:
+            # Must have insert-row AND upsert-row permissions
+            if not (
+                await self.ds.permission_allowed(
+                    request.actor, "insert-row", database_name, table_name
+                )
+                and await self.ds.permission_allowed(
+                    request.actor, "update-row", database_name, table_name
+                )
+            ):
+                return _error(
+                    ["Permission denied: need both insert-row and update-row"], 403
+                )
+        else:
+            # Must have insert-row permission
+            if not await self.ds.permission_allowed(
+                request.actor, "insert-row", resource=(database_name, table_name)
+            ):
+                return _error(["Permission denied"], 403)
+
+        if not db.is_mutable:
+            return _error(["Database is immutable"], 403)
+
+        pks = await db.primary_keys(table_name)
+
+        rows, errors, extras = await self._validate_data(
+            request, db, table_name, pks, upsert
+        )
+        if errors:
+            return _error(errors, 400)
+
+        # No that we've passed pks to _validate_data it's safe to
+        # fix the rowids case:
+        if not pks:
+            pks = ["rowid"]
+
+        ignore = extras.get("ignore")
+        replace = extras.get("replace")
+
+        if upsert and (ignore or replace):
+            return _error(["Upsert does not support ignore or replace"], 400)
+
+        should_return = bool(extras.get("return", False))
+        row_pk_values_for_later = []
+        if should_return and upsert:
+            row_pk_values_for_later = [tuple(row[pk] for pk in pks) for row in rows]
+
+        def insert_or_upsert_rows(conn):
+            table = sqlite_utils.Database(conn)[table_name]
+            kwargs = {}
+            if upsert:
+                kwargs["pk"] = pks[0] if len(pks) == 1 else pks
+            else:
+                kwargs = {"ignore": ignore, "replace": replace}
+            if should_return and not upsert:
+                rowids = []
+                method = table.upsert if upsert else table.insert
+                for row in rows:
+                    rowids.append(method(row, **kwargs).last_rowid)
+                return list(
+                    table.rows_where(
+                        "rowid in ({})".format(",".join("?" for _ in rowids)),
+                        rowids,
+                    )
+                )
+            else:
+                method_all = table.upsert_all if upsert else table.insert_all
+                method_all(rows, **kwargs)
+
+        try:
+            rows = await db.execute_write_fn(insert_or_upsert_rows)
+        except Exception as e:
+            return _error([str(e)])
+        result = {"ok": True}
+        if should_return:
+            if upsert:
+                # Fetch based on initial input IDs
+                where_clause = " OR ".join(
+                    ["({})".format(" AND ".join("{} = ?".format(pk) for pk in pks))]
+                    * len(row_pk_values_for_later)
+                )
+                args = list(itertools.chain.from_iterable(row_pk_values_for_later))
+                fetched_rows = await db.execute(
+                    "select {}* from [{}] where {}".format(
+                        "rowid, " if pks == ["rowid"] else "", table_name, where_clause
+                    ),
+                    args,
+                )
+                result["rows"] = [dict(r) for r in fetched_rows.rows]
+            else:
+                result["rows"] = rows
+        return Response.json(result, status=200 if upsert else 201)
+
+
+class TableUpsertView(TableInsertView):
+    name = "table-upsert"
+
+    async def post(self, request):
+        return await super().post(request, upsert=True)
+
+
+class TableDropView(BaseView):
+    name = "table-drop"
+
+    def __init__(self, datasette):
+        self.ds = datasette
+
+    async def post(self, request):
+        try:
+            resolved = await self.ds.resolve_table(request)
+        except NotFound as e:
+            return _error([e.args[0]], 404)
+        db = resolved.db
+        database_name = db.name
+        table_name = resolved.table
+        # Table must exist
+        db = self.ds.get_database(database_name)
+        if not await db.table_exists(table_name):
+            return _error(["Table not found: {}".format(table_name)], 404)
+        if not await self.ds.permission_allowed(
+            request.actor, "drop-table", resource=(database_name, table_name)
+        ):
+            return _error(["Permission denied"], 403)
+        if not db.is_mutable:
+            return _error(["Database is immutable"], 403)
+        confirm = False
+        try:
+            data = json.loads(await request.post_body())
+            confirm = data.get("confirm")
+        except json.JSONDecodeError as e:
+            pass
+
+        if not confirm:
+            return Response.json(
+                {
+                    "ok": True,
+                    "database": database_name,
+                    "table": table_name,
+                    "row_count": (
+                        await db.execute("select count(*) from [{}]".format(table_name))
+                    ).single_value(),
+                    "message": 'Pass "confirm": true to confirm',
+                },
+                status=200,
+            )
+
+        # Drop table
+        def drop_table(conn):
+            sqlite_utils.Database(conn)[table_name].drop()
+
+        await db.execute_write_fn(drop_table)
+        return Response.json({"ok": True}, status=200)

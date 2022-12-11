@@ -1,5 +1,5 @@
 from datasette.app import Datasette
-from datasette.utils.sqlite import sqlite3, sqlite_version
+from datasette.utils.sqlite import sqlite3
 from datasette.utils.testing import TestClient
 import click
 import contextlib
@@ -9,11 +9,9 @@ import os
 import pathlib
 import pytest
 import random
-import sys
 import string
 import tempfile
 import textwrap
-import time
 
 
 # This temp file is used by one of the plugin config tests
@@ -131,10 +129,14 @@ def make_app_client(
         for sql, params in TABLE_PARAMETERIZED_SQL:
             with conn:
                 conn.execute(sql, params)
+        # Close the connection to avoid "too many open files" errors
+        conn.close()
         if extra_databases is not None:
             for extra_filename, extra_sql in extra_databases.items():
                 extra_filepath = os.path.join(tmpdir, extra_filename)
-                sqlite3.connect(extra_filepath).executescript(extra_sql)
+                c2 = sqlite3.connect(extra_filepath)
+                c2.executescript(extra_sql)
+                c2.close()
                 # Insert at start to help test /-/databases ordering:
                 files.insert(0, extra_filepath)
         os.chdir(os.path.dirname(filepath))
@@ -163,6 +165,11 @@ def make_app_client(
             crossdb=crossdb,
         )
         yield TestClient(ds)
+        # Close as many database connections as possible
+        # to try and avoid too many open files error
+        for db in ds.databases.values():
+            if not db.is_memory:
+                db.close()
 
 
 @pytest.fixture(scope="session")

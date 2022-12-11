@@ -4,22 +4,103 @@
 Changelog
 =========
 
-.. _v0_63a0:
+.. _v1_0_a1:
 
-0.63a0 (2022-09-26)
+1.0a1 (2022-12-01)
+------------------
+
+- Write APIs now serve correct CORS headers if Datasette is started in ``--cors`` mode. See the full list of :ref:`CORS headers <json_api>` in the documentation. (:issue:`1922`)
+- Fixed a bug where the ``_memory`` database could be written to even though writes were not persisted. (:issue:`1917`)
+- The https://latest.datasette.io/ demo instance now includes an ``ephemeral`` database which can be used to test Datasette's write APIs, using the new `datasette-ephemeral-tables <https://datasette.io/plugins/datasette-ephemeral-tables>`_ plugin to drop any created tables after five minutes. This database is only available if you sign in as the root user using the link on the homepage. (:issue:`1915`)
+- Fixed a bug where hitting the write endpoints with a ``GET`` request returned a 500 error. It now returns a 405 (method not allowed) error instead. (:issue:`1916`)
+- The list of endpoints in the API explorer now lists mutable databases first. (:issue:`1918`)
+- The ``"ignore": true`` and ``"replace": true`` options for the insert API are :ref:`now documented <TableInsertView>`. (:issue:`1924`)
+
+.. _v1_0_a0:
+
+1.0a0 (2022-11-29)
+------------------
+
+This first alpha release of Datasette 1.0 introduces a brand new collection of APIs for writing to the database (:issue:`1850`), as well as a new API token mechanism baked into Datasette core. Previously, API tokens have only been supported by installing additional plugins.
+
+This is very much a preview: expect many more backwards incompatible API changes prior to the full 1.0 release.
+
+Feedback enthusiastically welcomed, either through `issue comments <https://github.com/simonw/datasette/issues/1850>`__ or via the `Datasette Discord <https://datasette.io/discord>`__ community.
+
+Signed API tokens
+~~~~~~~~~~~~~~~~~
+
+- New ``/-/create-token`` page allowing authenticated users to create signed API tokens that can act on their behalf, see :ref:`CreateTokenView`. (:issue:`1852`)
+- New ``datasette create-token`` command for creating tokens from the command line: :ref:`authentication_cli_create_token`.
+- New :ref:`setting_allow_signed_tokens` setting which can be used to turn off signed token support. (:issue:`1856`)
+- New :ref:`setting_max_signed_tokens_ttl` setting for restricting the maximum allowed duration of a signed token. (:issue:`1858`)
+
+Write API
+~~~~~~~~~
+
+- New API explorer at ``/-/api`` for trying out the API. (:issue:`1871`)
+- ``/db/-/create`` API for :ref:`TableCreateView`. (:issue:`1882`)
+- ``/db/table/-/insert`` API for :ref:`TableInsertView`. (:issue:`1851`)
+- ``/db/table/-/drop`` API for :ref:`TableDropView`. (:issue:`1874`)
+- ``/db/table/pk/-/update`` API for :ref:`RowUpdateView`. (:issue:`1863`)
+- ``/db/table/pk/-/delete`` API for :ref:`RowDeleteView`. (:issue:`1864`)
+
+.. _v0_63_2:
+
+0.63.2 (2022-11-18)
 -------------------
 
-- The :ref:`plugin_hook_prepare_jinja2_environment` plugin hook now accepts an optional ``datasette`` argument. Hook implementations can also now return an ``async`` function which will be awaited automatically. (:issue:`1809`)
+- Fixed a bug in ``datasette publish heroku`` where deployments failed due to an older version of Python being requested. (:issue:`1905`)
+- New ``datasette publish heroku --generate-dir <dir>`` option for generating a Heroku deployment directory without deploying it.
+
+.. _v0_63_1:
+
+0.63.1 (2022-11-10)
+-------------------
+
+- Fixed a bug where Datasette's table filter form would not redirect correctly when run behind a proxy using the :ref:`base_url <setting_base_url>` setting. (:issue:`1883`)
+- SQL query is now shown wrapped in a ``<textarea>`` if a query exceeds a time limit. (:issue:`1876`)
+- Fixed an intermittent "Too many open files" error while running the test suite. (:issue:`1843`)
+- New :ref:`database_close` internal method.
+
+.. _v0_63:
+
+0.63 (2022-10-27)
+-----------------
+
+See `Datasette 0.63: The annotated release notes <https://simonwillison.net/2022/Oct/27/datasette-0-63/>`__ for more background on the changes in this release.
+
+Features
+~~~~~~~~
+
+- Now tested against Python 3.11. Docker containers used by ``datasette publish`` and ``datasette package`` both now use that version of Python. (:issue:`1853`)
 - ``--load-extension`` option now supports entrypoints. Thanks, Alex Garcia. (`#1789 <https://github.com/simonw/datasette/pull/1789>`__)
-- New tutorial: `Cleaning data with sqlite-utils and Datasette <https://datasette.io/tutorials/clean-data>`__.
 - Facet size can now be set per-table with the new ``facet_size`` table metadata option. (:issue:`1804`)
-- ``truncate_cells_html`` setting now also affects long URLs in columns. (:issue:`1805`)
-- ``Database(is_mutable=)`` now defaults to ``True``. (:issue:`1808`)
-- Non-JavaScript textarea now increases height to fit the SQL query. (:issue:`1786`)
-- More detailed command descriptions on the :ref:`CLI reference <cli_reference>` page. (:issue:`1787`)
-- Datasette no longer enforces upper bounds on its depenedencies. (:issue:`1800`)
+- The :ref:`setting_truncate_cells_html` setting now also affects long URLs in columns. (:issue:`1805`)
+- The non-JavaScript SQL editor textarea now increases height to fit the SQL query. (:issue:`1786`)
 - Facets are now displayed with better line-breaks in long values. Thanks, Daniel Rech. (`#1794 <https://github.com/simonw/datasette/pull/1794>`__)
 - The ``settings.json`` file used in :ref:`config_dir` is now validated on startup. (:issue:`1816`)
+- SQL queries can now include leading SQL comments, using ``/* ... */`` or ``-- ...`` syntax. Thanks,  Charles Nepote. (:issue:`1860`)
+- SQL query is now re-displayed when terminated with a time limit error. (:issue:`1819`)
+- The :ref:`inspect data <performance_inspect>` mechanism is now used to speed up server startup - thanks, Forest Gregg. (:issue:`1834`)
+- In :ref:`config_dir` databases with filenames ending in ``.sqlite`` or ``.sqlite3`` are now automatically added to the Datasette instance. (:issue:`1646`)
+- Breadcrumb navigation display now respects the current user's permissions. (:issue:`1831`)
+
+Plugin hooks and internals
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- The :ref:`plugin_hook_prepare_jinja2_environment` plugin hook now accepts an optional ``datasette`` argument. Hook implementations can also now return an ``async`` function which will be awaited automatically. (:issue:`1809`)
+- ``Database(is_mutable=)`` now defaults to ``True``. (:issue:`1808`)
+- The :ref:`datasette.check_visibility() <datasette_check_visibility>` method now accepts an optional ``permissions=`` list, allowing it to take multiple permissions into account at once when deciding if something should be shown as public or private. This has been used to correctly display padlock icons in more places in the Datasette interface. (:issue:`1829`)
+- Datasette no longer enforces upper bounds on its dependencies. (:issue:`1800`)
+
+Documentation
+~~~~~~~~~~~~~
+
+- New tutorial: `Cleaning data with sqlite-utils and Datasette <https://datasette.io/tutorials/clean-data>`__.
+- Screenshots in the documentation are now maintained using `shot-scraper <https://shot-scraper.datasette.io/>`__, as described in `Automating screenshots for the Datasette documentation using shot-scraper <https://simonwillison.net/2022/Oct/14/automating-screenshots/>`__. (:issue:`1844`)
+- More detailed command descriptions on the :ref:`CLI reference <cli_reference>` page. (:issue:`1787`)
+- New documentation on :ref:`deploying_openrc` - thanks, Adam Simpson. (`#1825 <https://github.com/simonw/datasette/pull/1825>`__)
 
 .. _v0_62:
 
@@ -91,7 +172,7 @@ Datasette also now requires Python 3.7 or higher.
 - Python 3.6 is no longer supported. (:issue:`1577`)
 - Tests now run against Python 3.11-dev. (:issue:`1621`)
 - New :ref:`datasette.ensure_permissions(actor, permissions) <datasette_ensure_permissions>` internal method for checking multiple permissions at once. (:issue:`1675`)
-- New :ref:`datasette.check_visibility(actor, action, resource=None) <datasette_check_visibilty>` internal method for checking if a user can see a resource that would otherwise be invisible to unauthenticated users. (:issue:`1678`)
+- New :ref:`datasette.check_visibility(actor, action, resource=None) <datasette_check_visibility>` internal method for checking if a user can see a resource that would otherwise be invisible to unauthenticated users. (:issue:`1678`)
 - Table and row HTML pages now include a ``<link rel="alternate" type="application/json+datasette" href="...">`` element and return a ``Link: URL; rel="alternate"; type="application/json+datasette"`` HTTP header pointing to the JSON version of those pages. (:issue:`1533`)
 - ``Access-Control-Expose-Headers: Link`` is now added to the CORS headers, allowing remote JavaScript to access that header.
 - Canned queries are now shown at the top of the database page, directly below the SQL editor. Previously they were shown at the bottom, below the list of tables. (:issue:`1612`)
@@ -1452,7 +1533,8 @@ CSV export
 
 Any Datasette table, view or custom SQL query can now be exported as CSV.
 
-.. image:: advanced_export.png
+.. image:: https://github.com/simonw/datasette-screenshots/blob/0.62/advanced-export.png?raw=true
+   :alt: Advanced export form. You can get the data in different JSON shapes, and CSV options are download file, expand labels and stream all rows.
 
 Check out the :ref:`CSV export documentation <csv_export>` for more details, or
 try the feature out on

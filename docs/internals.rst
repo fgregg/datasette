@@ -349,7 +349,7 @@ await .ensure_permissions(actor, permissions)
 ``permissions`` - list
     A list of permissions to check. Each permission in that list can be a string ``action`` name or a 2-tuple of ``(action, resource)``.
 
-This method allows multiple permissions to be checked at onced. It raises a ``datasette.Forbidden`` exception if any of the checks are denied before one of them is explicitly granted.
+This method allows multiple permissions to be checked at once. It raises a ``datasette.Forbidden`` exception if any of the checks are denied before one of them is explicitly granted.
 
 This is useful when you need to check multiple permissions at once. For example, an actor should be able to view a table if either one of the following checks returns ``True`` or not a single one of them returns ``False``:
 
@@ -364,19 +364,22 @@ This is useful when you need to check multiple permissions at once. For example,
         ],
     )
 
-.. _datasette_check_visibilty:
+.. _datasette_check_visibility:
 
-await .check_visibility(actor, action, resource=None)
------------------------------------------------------
+await .check_visibility(actor, action=None, resource=None, permissions=None)
+----------------------------------------------------------------------------
 
 ``actor`` - dictionary
     The authenticated actor. This is usually ``request.actor``.
 
-``action`` - string
+``action`` - string, optional
     The name of the action that is being permission checked.
 
 ``resource`` - string or tuple, optional
     The resource, e.g. the name of the database, or a tuple of two strings containing the name of the database and the name of the table. Only some permissions apply to a resource.
+
+``permissions`` - list of ``action`` strings or ``(action, resource)`` tuples, optional
+    Provide this instead of ``action`` and ``resource`` to check multiple permissions at once.
 
 This convenience method can be used to answer the question "should this item be considered private, in that it is visible to me but it is not visible to anonymous users?"
 
@@ -387,7 +390,22 @@ This example checks if the user can access a specific table, and sets ``private`
 .. code-block:: python
 
     visible, private = await self.ds.check_visibility(
-        request.actor, "view-table", (database, table)
+        request.actor,
+        action="view-table",
+        resource=(database, table),
+    )
+
+The following example runs three checks in a row, similar to :ref:`datasette_ensure_permissions`. If any of the checks are denied before one of them is explicitly granted then ``visible`` will be ``False``. ``private`` will be ``True`` if an anonymous user would not be able to view the resource.
+
+.. code-block:: python
+
+    visible, private = await self.ds.check_visibility(
+        request.actor,
+        permissions=[
+            ("view-table", (database, table)),
+            ("view-database", database),
+            "view-instance",
+        ],
     )
 
 .. _datasette_get_database:
@@ -560,6 +578,84 @@ For example:
 .. code-block:: python
 
     downloads_are_allowed = datasette.setting("allow_download")
+
+.. _datasette_resolve_database:
+
+.resolve_database(request)
+--------------------------
+
+``request`` - :ref:`internals_request`
+    A request object
+
+If you are implementing your own custom views, you may need to resolve the database that the user is requesting based on a URL path. If the regular expression for your route declares a ``database`` named group, you can use this method to resolve the database object.
+
+This returns a :ref:`Database <internals_database>` instance.
+
+If the database cannot be found, it raises a ``datasette.utils.asgi.DatabaseNotFound`` exception - which is a subclass of ``datasette.utils.asgi.NotFound`` with a ``.database_name`` attribute set to the name of the database that was requested.
+
+.. _datasette_resolve_table:
+
+.resolve_table(request)
+-----------------------
+
+``request`` - :ref:`internals_request`
+    A request object
+
+This assumes that the regular expression for your route declares both a ``database`` and a ``table`` named group.
+
+It returns a ``ResolvedTable`` named tuple instance with the following fields:
+
+``db`` - :ref:`Database <internals_database>`
+    The database object
+
+``table`` - string
+    The name of the table (or view)
+
+``is_view`` - boolean
+    ``True`` if this is a view, ``False`` if it is a table
+
+If the database or table cannot be found it raises a ``datasette.utils.asgi.DatabaseNotFound`` exception.
+
+If the table does not exist it raises a ``datasette.utils.asgi.TableNotFound`` exception - a subclass of ``datasette.utils.asgi.NotFound`` with ``.database_name`` and ``.table`` attributes.
+
+.. _datasette_resolve_row:
+
+.resolve_row(request)
+---------------------
+
+``request`` - :ref:`internals_request`
+    A request object
+
+This method assumes your route declares named groups for ``database``, ``table`` and ``pks``.
+
+It returns a ``ResolvedRow`` named tuple instance with the following fields:
+
+``db`` - :ref:`Database <internals_database>`
+    The database object
+
+``table`` - string
+    The name of the table
+
+``sql`` - string
+    SQL snippet that can be used in a ``WHERE`` clause to select the row
+
+``params`` - dict
+    Parameters that should be passed to the SQL query
+
+``pks`` - list
+    List of primary key column names
+
+``pk_values`` - list
+    List of primary key values decoded from the URL
+
+``row`` - ``sqlite3.Row``
+    The row itself
+
+If the database or table cannot be found it raises a ``datasette.utils.asgi.DatabaseNotFound`` exception.
+
+If the table does not exist it raises a ``datasette.utils.asgi.TableNotFound`` exception.
+
+If the row cannot be found it raises a ``datasette.utils.asgi.RowNotFound`` exception. This has ``.database_name``, ``.table`` and ``.pk_values`` attributes, extracted from the request path.
 
 .. _internals_datasette_client:
 
@@ -752,7 +848,7 @@ The ``Results`` object also has the following properties and methods:
 ``.columns`` - list of strings
     A list of column names returned by the query.
 
-``.rows`` - list of sqlite3.Row
+``.rows`` - list of ``sqlite3.Row``
     This property provides direct access to the list of rows returned by the database. You can access specific rows by index using ``results.rows[0]``.
 
 ``.first()`` - row or None
@@ -856,6 +952,13 @@ If your function raises an exception that exception will be propagated up to the
 
 If you specify ``block=False`` the method becomes fire-and-forget, queueing your function to be executed and then allowing your code after the call to ``.execute_write_fn()`` to continue running while the underlying thread waits for an opportunity to run your function. A UUID representing the queued task will be returned. Any exceptions in your code will be silently swallowed.
 
+.. _database_close:
+
+db.close()
+----------
+
+Closes all of the open connections to file-backed databases. This is mainly intended to be used by large test suites, to avoid hitting limits on the number of open files.
+
 .. _internals_database_introspection:
 
 Database introspection
@@ -883,6 +986,9 @@ The ``Database`` class also provides properties and methods for introspecting th
 
 ``await db.table_exists(table)`` - boolean
     Check if a table called ``table`` exists.
+
+``await db.view_exists(view)`` - boolean
+    Check if a view called ``view`` exists.
 
 ``await db.table_names()`` - list of strings
     List of names of tables in the database.

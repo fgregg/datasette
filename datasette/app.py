@@ -1,5 +1,5 @@
 import asyncio
-from typing import Sequence, Union, Tuple
+from typing import Sequence, Union, Tuple, Optional
 import asgi_csrf
 import collections
 import datetime
@@ -27,19 +27,21 @@ from jinja2.environment import Template
 from jinja2.exceptions import TemplateNotFound
 
 from .views.base import ureg
-from .views.database import DatabaseDownload, DatabaseView
+from .views.database import DatabaseDownload, DatabaseView, TableCreateView
 from .views.index import IndexView
 from .views.special import (
     JsonDataView,
     PatternPortfolioView,
     AuthTokenView,
+    ApiExplorerView,
+    CreateTokenView,
     LogoutView,
     AllowDebugView,
     PermissionsDebugView,
     MessagesDebugView,
 )
-from .views.table import TableView
-from .views.row import RowView
+from .views.table import TableView, TableInsertView, TableUpsertView, TableDropView
+from .views.row import RowView, RowDeleteView, RowUpdateView
 from .renderer import json_renderer
 from .url_builder import Urls
 from .database import Database, QueryInterrupted
@@ -60,13 +62,19 @@ from .utils import (
     parse_metadata,
     resolve_env_secrets,
     resolve_routes,
+    tilde_decode,
     to_css_class,
+    urlsafe_components,
+    row_sql_params_pks,
 )
 from .utils.asgi import (
     AsgiLifespan,
     Base400,
     Forbidden,
     NotFound,
+    DatabaseNotFound,
+    TableNotFound,
+    RowNotFound,
     Request,
     Response,
     asgi_static,
@@ -99,6 +107,11 @@ SETTINGS = (
         "Maximum rows that can be returned from a table or custom query",
     ),
     Setting(
+        "max_insert_rows",
+        100,
+        "Maximum rows that can be inserted at a time using the bulk insert API",
+    ),
+    Setting(
         "num_sql_threads",
         3,
         "Number of threads in the thread pool for executing SQLite queries",
@@ -122,6 +135,16 @@ SETTINGS = (
         "allow_download",
         True,
         "Allow users to download the original SQLite database files",
+    ),
+    Setting(
+        "allow_signed_tokens",
+        True,
+        "Allow users to create and use signed API tokens",
+    ),
+    Setting(
+        "max_signed_tokens_ttl",
+        0,
+        "Maximum allowed expiry time for signed API tokens",
     ),
     Setting("suggest_facets", True, "Calculate and display suggested facets"),
     Setting(
@@ -181,6 +204,12 @@ async def favicon(request, send):
     )
 
 
+ResolvedTable = collections.namedtuple("ResolvedTable", ("db", "table", "is_view"))
+ResolvedRow = collections.namedtuple(
+    "ResolvedRow", ("db", "table", "sql", "params", "pks", "pk_values", "row")
+)
+
+
 class Datasette:
     # Message constants:
     INFO = 1
@@ -217,7 +246,10 @@ class Datasette:
         self._secret = secret or secrets.token_hex(32)
         self.files = tuple(files or []) + tuple(immutables or [])
         if config_dir:
-            self.files += tuple([str(p) for p in config_dir.glob("*.db")])
+            db_files = []
+            for ext in ("db", "sqlite", "sqlite3"):
+                db_files.extend(config_dir.glob("*.{}".format(ext)))
+            self.files += tuple(str(f) for f in db_files)
         if (
             config_dir
             and (config_dir / "inspect-data.json").exists()
@@ -246,7 +278,9 @@ class Datasette:
         self.crossdb = crossdb
         self.nolock = nolock
         if memory or crossdb or not self.files:
-            self.add_database(Database(self, is_memory=True), name="_memory")
+            self.add_database(
+                Database(self, is_mutable=False, is_memory=True), name="_memory"
+            )
         # memory_name is a random string so that each Datasette instance gets its own
         # unique in-memory named database - otherwise unit tests can fail with weird
         # errors when different instances accidentally share an in-memory database
@@ -628,6 +662,47 @@ class Datasette:
         else:
             return []
 
+    async def _crumb_items(self, request, table=None, database=None):
+        crumbs = []
+        actor = None
+        if request:
+            actor = request.actor
+        # Top-level link
+        if await self.permission_allowed(
+            actor=actor, action="view-instance", default=True
+        ):
+            crumbs.append({"href": self.urls.instance(), "label": "home"})
+        # Database link
+        if database:
+            if await self.permission_allowed(
+                actor=actor,
+                action="view-database",
+                resource=database,
+                default=True,
+            ):
+                crumbs.append(
+                    {
+                        "href": self.urls.database(database),
+                        "label": database,
+                    }
+                )
+        # Table link
+        if table:
+            assert database, "table= requires database="
+            if await self.permission_allowed(
+                actor=actor,
+                action="view-table",
+                resource=(database, table),
+                default=True,
+            ):
+                crumbs.append(
+                    {
+                        "href": self.urls.table(database, table),
+                        "label": table,
+                    }
+                )
+        return crumbs
+
     async def permission_allowed(self, actor, action, resource=None, default=False):
         """Check permissions using the permissions_allowed plugin hook"""
         result = None
@@ -666,7 +741,7 @@ class Datasette:
 
         Raises datasette.Forbidden() if any of the checks fail
         """
-        assert actor is None or isinstance(actor, dict)
+        assert actor is None or isinstance(actor, dict), "actor must be None or a dict"
         for permission in permissions:
             if isinstance(permission, str):
                 action = permission
@@ -691,23 +766,34 @@ class Datasette:
                 else:
                     raise Forbidden(action)
 
-    async def check_visibility(self, actor, action, resource):
+    async def check_visibility(
+        self,
+        actor: dict,
+        action: Optional[str] = None,
+        resource: Optional[Union[str, Tuple[str, str]]] = None,
+        permissions: Optional[
+            Sequence[Union[Tuple[str, Union[str, Tuple[str, str]]], str]]
+        ] = None,
+    ):
         """Returns (visible, private) - visible = can you see it, private = can others see it too"""
-        visible = await self.permission_allowed(
-            actor,
-            action,
-            resource=resource,
-            default=True,
-        )
-        if not visible:
+        if permissions:
+            assert (
+                not action and not resource
+            ), "Can't use action= or resource= with permissions="
+        else:
+            permissions = [(action, resource)]
+        try:
+            await self.ensure_permissions(actor, permissions)
+        except Forbidden:
             return False, False
-        private = not await self.permission_allowed(
-            None,
-            action,
-            resource=resource,
-            default=True,
-        )
-        return visible, private
+        # User can see it, but can the anonymous user see it?
+        try:
+            await self.ensure_permissions(None, permissions)
+        except Forbidden:
+            # It's visible but private
+            return True, True
+        # It's visible to everyone
+        return True, False
 
     async def execute(
         self,
@@ -1006,6 +1092,8 @@ class Datasette:
         template_context = {
             **context,
             **{
+                "request": request,
+                "crumb_items": self._crumb_items,
                 "urls": self.urls,
                 "actor": request.actor if request else None,
                 "menu_links": menu_links,
@@ -1026,6 +1114,7 @@ class Datasette:
                 ),
                 "base_url": self.setting("base_url"),
                 "csrftoken": request.scope["csrftoken"] if request else lambda: "",
+                "datasette_version": __version__,
             },
             **extra_template_vars,
         }
@@ -1159,6 +1248,14 @@ class Datasette:
             r"/-/auth-token$",
         )
         add_route(
+            CreateTokenView.as_view(self),
+            r"/-/create-token$",
+        )
+        add_route(
+            ApiExplorerView.as_view(self),
+            r"/-/api$",
+        )
+        add_route(
             LogoutView.as_view(self),
             r"/-/logout$",
         )
@@ -1182,6 +1279,7 @@ class Datasette:
         add_route(
             DatabaseView.as_view(self), r"/(?P<database>[^\/\.]+)(\.(?P<format>\w+))?$"
         )
+        add_route(TableCreateView.as_view(self), r"/(?P<database>[^\/\.]+)/-/create$")
         add_route(
             TableView.as_view(self),
             r"/(?P<database>[^\/\.]+)/(?P<table>[^\/\.]+)(\.(?P<format>\w+))?$",
@@ -1190,11 +1288,66 @@ class Datasette:
             RowView.as_view(self),
             r"/(?P<database>[^\/\.]+)/(?P<table>[^/]+?)/(?P<pks>[^/]+?)(\.(?P<format>\w+))?$",
         )
+        add_route(
+            TableInsertView.as_view(self),
+            r"/(?P<database>[^\/\.]+)/(?P<table>[^\/\.]+)/-/insert$",
+        )
+        add_route(
+            TableUpsertView.as_view(self),
+            r"/(?P<database>[^\/\.]+)/(?P<table>[^\/\.]+)/-/upsert$",
+        )
+        add_route(
+            TableDropView.as_view(self),
+            r"/(?P<database>[^\/\.]+)/(?P<table>[^\/\.]+)/-/drop$",
+        )
+        add_route(
+            RowDeleteView.as_view(self),
+            r"/(?P<database>[^\/\.]+)/(?P<table>[^/]+?)/(?P<pks>[^/]+?)/-/delete$",
+        )
+        add_route(
+            RowUpdateView.as_view(self),
+            r"/(?P<database>[^\/\.]+)/(?P<table>[^/]+?)/(?P<pks>[^/]+?)/-/update$",
+        )
         return [
             # Compile any strings to regular expressions
             ((re.compile(pattern) if isinstance(pattern, str) else pattern), view)
             for pattern, view in routes
         ]
+
+    async def resolve_database(self, request):
+        database_route = tilde_decode(request.url_vars["database"])
+        try:
+            return self.get_database(route=database_route)
+        except KeyError:
+            raise DatabaseNotFound(
+                "Database not found: {}".format(database_route), database_route
+            )
+
+    async def resolve_table(self, request):
+        db = await self.resolve_database(request)
+        table_name = tilde_decode(request.url_vars["table"])
+        # Table must exist
+        is_view = False
+        table_exists = await db.table_exists(table_name)
+        if not table_exists:
+            is_view = await db.view_exists(table_name)
+        if not (table_exists or is_view):
+            raise TableNotFound(
+                "Table not found: {}".format(table_name), db.name, table_name
+            )
+        return ResolvedTable(db, table_name, is_view)
+
+    async def resolve_row(self, request):
+        db, table_name, _ = await self.resolve_table(request)
+        pk_values = urlsafe_components(request.url_vars["pks"])
+        sql, params, pks = await row_sql_params_pks(db, table_name, pk_values)
+        results = await db.execute(sql, params, truncate=True)
+        row = results.first()
+        if row is None:
+            raise RowNotFound(
+                "Row not found: {}".format(pk_values), db.name, table_name, pk_values
+            )
+        return ResolvedRow(db, table_name, sql, params, pks, pk_values, results.first())
 
     def app(self):
         """Returns an ASGI app function that serves the whole of Datasette"""
