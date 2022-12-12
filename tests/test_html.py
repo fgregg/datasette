@@ -55,8 +55,8 @@ def test_http_head(app_client):
 
 def test_homepage_options(app_client):
     response = app_client.get("/", method="OPTIONS")
-    assert response.status == 405
-    assert response.text == "Method not allowed"
+    assert response.status == 200
+    assert response.text == "ok"
 
 
 def test_favicon(app_client):
@@ -172,7 +172,7 @@ def test_sql_time_limit(app_client_shorter_time_limit):
         """
         <a href="https://docs.datasette.io/en/stable/settings.html#sql-time-limit-ms">sql_time_limit_ms</a>
     """.strip(),
-        "<pre>select sleep(0.5)</pre>",
+        '<textarea style="width: 90%">select sleep(0.5)</textarea>',
     ]
     for expected_html_fragment in expected_html_fragments:
         assert expected_html_fragment in response.text
@@ -765,6 +765,8 @@ def test_base_url_config(app_client_base_url_prefix, path, use_prefix):
         path_to_get = "/prefix/" + path.lstrip("/")
     response = client.get(path_to_get)
     soup = Soup(response.body, "html.parser")
+    for form in soup.select("form"):
+        assert form["action"].startswith("/prefix")
     for el in soup.findAll(["a", "link", "script"]):
         if "href" in el.attrs:
             href = el["href"]
@@ -797,6 +799,16 @@ def test_base_url_config(app_client_base_url_prefix, path, use_prefix):
                 indent=4,
                 default=repr,
             )
+
+
+def test_base_url_affects_filter_redirects(app_client_base_url_prefix):
+    path = "/fixtures/binary_data?_filter_column=rowid&_filter_op=exact&_filter_value=1&_sort=rowid"
+    response = app_client_base_url_prefix.get(path)
+    assert response.status == 302
+    assert (
+        response.headers["location"]
+        == "/prefix/fixtures/binary_data?_sort=rowid&rowid__exact=1"
+    )
 
 
 def test_base_url_affects_metadata_extra_css_urls(app_client_base_url_prefix):
@@ -977,3 +989,53 @@ def test_redirect_percent_encoding_to_tilde_encoding(app_client, path, expected)
     response = app_client.get(path)
     assert response.status == 302
     assert response.headers["location"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path,metadata,expected_links",
+    (
+        ("/fixtures", {}, [("/", "home")]),
+        ("/fixtures", {"allow": False, "databases": {"fixtures": {"allow": True}}}, []),
+        (
+            "/fixtures/facetable",
+            {"allow": False, "databases": {"fixtures": {"allow": True}}},
+            [("/fixtures", "fixtures")],
+        ),
+        (
+            "/fixtures/facetable/1",
+            {},
+            [
+                ("/", "home"),
+                ("/fixtures", "fixtures"),
+                ("/fixtures/facetable", "facetable"),
+            ],
+        ),
+        (
+            "/fixtures/facetable/1",
+            {"allow": False, "databases": {"fixtures": {"allow": True}}},
+            [("/fixtures", "fixtures"), ("/fixtures/facetable", "facetable")],
+        ),
+        (
+            "/fixtures/facetable/1",
+            {
+                "allow": False,
+                "databases": {"fixtures": {"tables": {"facetable": {"allow": True}}}},
+            },
+            [("/fixtures/facetable", "facetable")],
+        ),
+    ),
+)
+async def test_breadcrumbs_respect_permissions(
+    app_client, path, metadata, expected_links
+):
+    orig = app_client.ds._metadata_local
+    app_client.ds._metadata_local = metadata
+    try:
+        response = await app_client.ds.client.get(path)
+        soup = Soup(response.text, "html.parser")
+        breadcrumbs = soup.select("p.crumbs a")
+        actual = [(a["href"], a.text) for a in breadcrumbs]
+        assert actual == expected_links
+    finally:
+        app_client.ds._metadata_local = orig

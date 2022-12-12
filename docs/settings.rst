@@ -46,7 +46,7 @@ Datasette will detect the files in that directory and automatically configure it
 
 The files that can be included in this directory are as follows. All are optional.
 
-* ``*.db`` - SQLite database files that will be served by Datasette
+* ``*.db`` (or ``*.sqlite3`` or ``*.sqlite``) - SQLite database files that will be served by Datasette
 * ``metadata.json`` - :ref:`metadata` for those databases - ``metadata.yaml`` or ``metadata.yml`` can be used as well
 * ``inspect-data.json`` - the result of running ``datasette inspect *.db --inspect-file=inspect-data.json`` from the configuration directory - any database files listed here will be treated as immutable, so they should not be changed while Datasette is running
 * ``settings.json`` - settings that would normally be passed using ``--setting`` - here they should be stored as a JSON object of key/value pairs
@@ -95,6 +95,17 @@ Datasette returns a maximum of 1,000 rows of data at a time. If you execute a qu
 You can increase or decrease this limit like so::
 
     datasette mydatabase.db --setting max_returned_rows 2000
+
+.. _setting_max_insert_rows:
+
+max_insert_rows
+~~~~~~~~~~~~~~~
+
+Maximum rows that can be inserted at a time using the bulk insert API, see :ref:`TableInsertView`. Defaults to 100.
+
+You can increase or decrease this limit like so::
+
+    datasette mydatabase.db --setting max_insert_rows 1000
 
 .. _setting_num_sql_threads:
 
@@ -168,6 +179,34 @@ allow_download
 Should users be able to download the original SQLite database using a link on the database index page? This is turned on by default. However, databases can only be downloaded if they are served in immutable mode and not in-memory. If downloading is unavailable for either of these reasons, the download link is hidden even if ``allow_download`` is on. To disable database downloads, use the following::
 
     datasette mydatabase.db --setting allow_download off
+
+.. _setting_allow_signed_tokens:
+
+allow_signed_tokens
+~~~~~~~~~~~~~~~~~~~
+
+Should users be able to create signed API tokens to access Datasette?
+
+This is turned on by default. Use the following to turn it off::
+
+    datasette mydatabase.db --setting allow_signed_tokens off
+
+Turning this setting off will disable the ``/-/create-token`` page, :ref:`described here <CreateTokenView>`. It will also cause any incoming ``Authorization: Bearer dstok_...`` API tokens to be ignored.
+
+.. _setting_max_signed_tokens_ttl:
+
+max_signed_tokens_ttl
+~~~~~~~~~~~~~~~~~~~~~
+
+Maximum allowed expiry time for signed API tokens created by users.
+
+Defaults to ``0`` which means no limit - tokens can be created that will never expire.
+
+Set this to a value in seconds to limit the maximum expiry time. For example, to set that limit to 24 hours you would use::
+
+    datasette mydatabase.db --setting max_signed_tokens_ttl 86400
+
+This setting is enforced when incoming tokens are processed.
 
 .. _setting_default_cache_ttl:
 

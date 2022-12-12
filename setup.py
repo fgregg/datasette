@@ -57,6 +57,7 @@ setup(
         "PyYAML>=5.3",
         "mergedeep>=1.1.1",
         "itsdangerous>=1.1",
+        "sqlite-utils>=3.30",
     ],
     entry_points="""
         [console_scripts]
@@ -65,7 +66,7 @@ setup(
     setup_requires=["pytest-runner"],
     extras_require={
         "docs": [
-            "furo==2022.9.29",
+            "furo==2022.12.7",
             "sphinx-autobuild",
             "codespell",
             "blacken-docs",
@@ -76,7 +77,7 @@ setup(
             "pytest-xdist>=2.2.1",
             "pytest-asyncio>=0.17",
             "beautifulsoup4>=4.8.1",
-            "black==22.8.0",
+            "black==22.10.0",
             "blacken-docs==1.12.1",
             "pytest-timeout>=1.4.2",
             "trustme>=0.7",
