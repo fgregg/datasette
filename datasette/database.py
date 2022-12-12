@@ -47,11 +47,8 @@ class Database:
         # These are used when in non-threaded mode:
         self._read_connection = None
         self._write_connection = None
-<<<<<<< HEAD
-=======
         # This is used to track all file connections so they can be closed
         self._all_file_connections = []
->>>>>>> e539c1c024bc62d88df91d9107cbe37e7f0fe55f
 
     @property
     def cached_table_counts(self):
