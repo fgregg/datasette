@@ -395,7 +395,9 @@ def make_dockerfile(
             install
         )
     else:
-        install = ["https://github.com/fgregg/datasette/archive/refs/heads/no_limit_csv.zip"] + list(install)
+        install = [
+            "https://github.com/fgregg/datasette/archive/refs/heads/no_limit_csv.zip"
+        ] + list(install)
 
     apt_get_extras_ = []
     apt_get_extras_.extend(apt_get_extras)
