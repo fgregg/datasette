@@ -1201,6 +1201,7 @@ This example registers two new magic parameters: ``:_request_http_version`` retu
 
 .. code-block:: python
 
+    from datasette import hookimpl
     from uuid import uuid4
 
 
@@ -1393,7 +1394,7 @@ This example adds a new table action if the signed in user is ``"root"``:
 
 
     @hookimpl
-    def table_actions(datasette, actor):
+    def table_actions(datasette, actor, database, table):
         if actor and actor.get("id") == "root":
             return [
                 {

@@ -1,4 +1,5 @@
 import asyncio
+from pydoc import plain
 from typing import Sequence, Union, Tuple, Optional, Dict, Iterable
 import asgi_csrf
 import collections
@@ -141,6 +142,11 @@ SETTINGS = (
         "Allow users to create and use signed API tokens",
     ),
     Setting(
+        "default_allow_sql",
+        True,
+        "Allow anyone to run arbitrary SQL queries",
+    ),
+    Setting(
         "max_signed_tokens_ttl",
         0,
         "Maximum allowed expiry time for signed API tokens",
@@ -245,6 +251,8 @@ class Datasette:
         self.config_dir = config_dir
         self.pdb = pdb
         self._secret = secret or secrets.token_hex(32)
+        if files is not None and isinstance(files, str):
+            raise ValueError("files= must be a list of paths, not a string")
         self.files = tuple(files or []) + tuple(immutables or [])
         if config_dir:
             db_files = []
@@ -415,12 +423,19 @@ class Datasette:
             # Compare schema versions to see if we should skip it
             if schema_version == current_schema_versions.get(database_name):
                 continue
+            placeholders = "(?, ?, ?, ?)"
+            values = [database_name, str(db.path), db.is_memory, schema_version]
+            if db.path is None:
+                placeholders = "(?, null, ?, ?)"
+                values = [database_name, db.is_memory, schema_version]
             await internal_db.execute_write(
                 """
                 INSERT OR REPLACE INTO databases (database_name, path, is_memory, schema_version)
-                VALUES (?, ?, ?, ?)
-            """,
-                [database_name, str(db.path), db.is_memory, schema_version],
+                VALUES {}
+            """.format(
+                    placeholders
+                ),
+                values,
             )
             await populate_schema_tables(internal_db, db)
 
