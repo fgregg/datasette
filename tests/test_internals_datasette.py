@@ -4,13 +4,12 @@ Tests for the datasette.app.Datasette class
 from datasette import Forbidden
 from datasette.app import Datasette, Database
 from itsdangerous import BadSignature
-from .fixtures import app_client
 import pytest
 
 
 @pytest.fixture
-def datasette(app_client):
-    return app_client.ds
+def datasette(ds_client):
+    return ds_client.ds
 
 
 def test_get_database(datasette):
@@ -116,6 +115,7 @@ async def test_datasette_ensure_permissions_check_visibility(
     actor, metadata, permissions, should_allow, expected_private
 ):
     ds = Datasette([], memory=True, metadata=metadata)
+    await ds.invoke_startup()
     if not should_allow:
         with pytest.raises(Forbidden):
             await ds.ensure_permissions(actor, permissions)
@@ -130,7 +130,14 @@ async def test_datasette_ensure_permissions_check_visibility(
 @pytest.mark.asyncio
 async def test_datasette_render_template_no_request():
     # https://github.com/simonw/datasette/issues/1849
-    ds = Datasette([], memory=True)
+    ds = Datasette(memory=True)
     await ds.invoke_startup()
     rendered = await ds.render_template("error.html")
     assert "Error " in rendered
+
+
+def test_datasette_error_if_string_not_list(tmpdir):
+    # https://github.com/simonw/datasette/issues/1985
+    db_path = str(tmpdir / "data.db")
+    with pytest.raises(ValueError):
+        ds = Datasette(db_path)

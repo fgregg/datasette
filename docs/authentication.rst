@@ -185,8 +185,14 @@ The ``/-/allow-debug`` tool lets you try out different  ``"action"`` blocks agai
 
 .. _authentication_permissions_metadata:
 
-Configuring permissions in metadata.json
-========================================
+Access permissions in metadata
+==============================
+
+There are two ways to configure permissions using ``metadata.json`` (or ``metadata.yaml``).
+
+For simple visibility permissions you can use ``"allow"`` blocks in the root, database, table and query sections.
+
+For other permissions you can use a ``"permissions"`` block, described :ref:`in the next section <authentication_permissions_other>`.
 
 You can limit who is allowed to view different parts of your Datasette instance using ``"allow"`` keys in your :ref:`metadata` configuration.
 
@@ -201,8 +207,8 @@ If a user cannot access a specific database, they will not be able to access tab
 
 .. _authentication_permissions_instance:
 
-Controlling access to an instance
----------------------------------
+Access to an instance
+---------------------
 
 Here's how to restrict access to your entire Datasette instance to just the ``"id": "root"`` user:
 
@@ -228,8 +234,8 @@ One reason to do this is if you are using a Datasette plugin - such as `datasett
 
 .. _authentication_permissions_database:
 
-Controlling access to specific databases
-----------------------------------------
+Access to specific databases
+----------------------------
 
 To limit access to a specific ``private.db`` database to just authenticated users, use the ``"allow"`` block like this:
 
@@ -247,8 +253,8 @@ To limit access to a specific ``private.db`` database to just authenticated user
 
 .. _authentication_permissions_table:
 
-Controlling access to specific tables and views
------------------------------------------------
+Access to specific tables and views
+-----------------------------------
 
 To limit access to the ``users`` table in your ``bakery.db`` database:
 
@@ -277,8 +283,8 @@ This works for SQL views as well - you can list their names in the ``"tables"`` 
 
 .. _authentication_permissions_query:
 
-Controlling access to specific canned queries
----------------------------------------------
+Access to specific canned queries
+---------------------------------
 
 :ref:`canned_queries` allow you to configure named SQL queries in your ``metadata.json`` that can be executed by users. These queries can be set up to both read and write to the database, so controlling who can execute them can be important.
 
@@ -307,7 +313,21 @@ To limit access to the ``add_name`` canned query in your ``dogs.db`` database to
 Controlling the ability to execute arbitrary SQL
 ------------------------------------------------
 
-The ``"allow_sql"`` block can be used to control who is allowed to execute arbitrary SQL queries, both using the form on the database page e.g. https://latest.datasette.io/fixtures or by appending a ``?_where=`` parameter to the table page as seen on https://latest.datasette.io/fixtures/facetable?_where=city_id=1.
+Datasette defaults to allowing any site visitor to execute their own custom SQL queries, for example using the form on `the database page <https://latest.datasette.io/fixtures>`__ or by appending a ``?_where=`` parameter to the table page `like this <https://latest.datasette.io/fixtures/facetable?_where=_city_id=1>`__.
+
+Access to this ability is controlled by the :ref:`permissions_execute_sql` permission.
+
+The easiest way to disable arbitrary SQL queries is using the :ref:`default_allow_sql setting <setting_default_allow_sql>` when you first start Datasette running.
+
+You can alternatively use an ``"allow_sql"`` block to control who is allowed to execute arbitrary SQL queries.
+
+To prevent any user from executing arbitrary SQL queries, use this:
+
+.. code-block:: json
+
+    {
+        "allow_sql": false
+    }
 
 To enable just the :ref:`root user<authentication_root>` to execute SQL for all databases in your instance, use the following:
 
@@ -333,6 +353,63 @@ To limit this ability for just one specific database, use this:
         }
     }
 
+.. _authentication_permissions_other:
+
+Other permissions in metadata
+=============================
+
+For all other permissions, you can use one or more ``"permissions"`` blocks in your metadata.
+
+To grant access to the :ref:`permissions debug tool <PermissionsDebugView>` to all signed in users you can grant ``permissions-debug`` to any actor with an ``id`` matching the wildcard ``*`` by adding this a the root of your metadata:
+
+.. code-block:: json
+
+    {
+        "permissions": {
+            "debug-menu": {
+                "id": "*"
+            }
+        }
+    }
+
+To grant ``create-table`` to the user with ``id`` of ``editor`` for the ``docs`` database:
+
+.. code-block:: json
+
+    {
+        "databases": {
+            "docs": {
+                "permissions": {
+                    "create-table": {
+                        "id": "editor"
+                    }
+                }
+            }
+        }
+    }
+
+And for ``insert-row`` against the ``reports`` table in that ``docs`` database:
+
+.. code-block:: json
+
+    {
+        "databases": {
+            "docs": {
+                "tables": {
+                    "reports": {
+                        "permissions": {
+                            "insert-row": {
+                                "id": "editor"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+The :ref:`permissions debug tool <PermissionsDebugView>` can be useful for helping test permissions that you have configured in this way.
+
 .. _CreateTokenView:
 
 API Tokens
@@ -342,11 +419,11 @@ Datasette includes a default mechanism for generating API tokens that can be use
 
 Authenticated users can create new API tokens using a form on the ``/-/create-token`` page.
 
+Tokens created in this way can be further restricted to only allow access to specific actions, or to limit those actions to specific databases, tables or queries.
+
 Created tokens can then be passed in the ``Authorization: Bearer $token`` header of HTTP requests to Datasette.
 
 A token created by a user will include that user's ``"id"`` in the token payload, so any permissions granted to that user based on their ID can be made available to the token as well.
-
-Coming soon: a mechanism for creating tokens that can only perform a specified subset of the actions available to the user who created them.
 
 When one of these a token accompanies a request, the actor for that request will have the following shape:
 
@@ -379,7 +456,7 @@ You can also create tokens on the command line using the ``datasette create-toke
 
 This command takes one required argument - the ID of the actor to be associated with the created token.
 
-You can specify an ``--expires-after`` option in seconds. If omitted, the token will never expire.
+You can specify a ``-e/--expires-after`` option in seconds. If omitted, the token will never expire.
 
 The command will sign the token using the ``DATASETTE_SECRET`` environment variable, if available. You can also pass the secret using the ``--secret`` option.
 
@@ -389,9 +466,79 @@ To create a token for the ``root`` actor that will expire in one hour::
 
     datasette create-token root --expires-after 3600
 
-To create a secret that never expires using a specific secret::
+To create a token that never expires using a specific secret::
 
     datasette create-token root --secret my-secret-goes-here
+
+.. _authentication_cli_create_token_restrict:
+
+Restricting the actions that a token can perform
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Tokens created using ``datasette create-token ACTOR_ID`` will inherit all of the permissions of the actor that they are associated with.
+
+You can pass additional options to create tokens that are restricted to a subset of that actor's permissions.
+
+To restrict the token to just specific permissions against all available databases, use the ``--all`` option::
+
+    datasette create-token root --all insert-row --all update-row
+
+This option can be passed as many times as you like. In the above example the token will only be allowed to insert and update rows.
+
+You can also restrict permissions such that they can only be used within specific databases::
+
+    datasette create-token root --database mydatabase insert-row
+
+The resulting token will only be able to insert rows, and only to tables in the ``mydatabase`` database.
+
+Finally, you can restrict permissions to individual resources - tables, SQL views and :ref:`named queries <canned_queries>` - within a specific database::
+
+    datasette create-token root --resource mydatabase mytable insert-row
+
+These options have short versions: ``-a`` for ``--all``, ``-d`` for ``--database`` and ``-r`` for ``--resource``.
+
+You can add ``--debug`` to see a JSON representation of the token that has been created. Here's a full example::
+
+    datasette create-token root \
+        --secret mysecret \
+        --all view-instance \
+        --all view-table \
+        --database docs view-query \
+        --resource docs documents insert-row \
+        --resource docs documents update-row \
+        --debug
+
+This example outputs the following::
+
+    dstok_.eJxFizEKgDAMRe_y5w4qYrFXERGxDkVsMI0uxbubdjFL8l_ez1jhwEQCA6Fjjxp90qtkuHawzdjYrh8MFobLxZ_wBH0_gtnAF-hpS5VfmF8D_lnd97lHqUJgLd6sls4H1qwlhA.nH_7RecYHj5qSzvjhMU95iy0Xlc
+
+    Decoded:
+
+    {
+      "a": "root",
+      "token": "dstok",
+      "t": 1670907246,
+      "_r": {
+        "a": [
+          "vi",
+          "vt"
+        ],
+        "d": {
+          "docs": [
+            "vq"
+          ]
+        },
+        "r": {
+          "docs": {
+            "documents": [
+              "ir",
+              "ur"
+            ]
+          }
+        }
+      }
+    }
+
 
 .. _permissions_plugins:
 
@@ -423,9 +570,11 @@ The currently authenticated actor is made available to plugins as ``request.acto
 The permissions debug tool
 ==========================
 
-The debug tool at ``/-/permissions`` is only available to the :ref:`authenticated root user <authentication_root>` (or any actor granted the ``permissions-debug`` action according to a plugin).
+The debug tool at ``/-/permissions`` is only available to the :ref:`authenticated root user <authentication_root>` (or any actor granted the ``permissions-debug`` action).
 
 It shows the thirty most recent permission checks that have been carried out by the Datasette instance.
+
+It also provides an interface for running hypothetical permission checks against a hypothetical actor. This is a useful way of confirming that your configured permissions work in the way you expect.
 
 This is designed to help administrators and plugin authors understand exactly how permission checks are being carried out, in order to effectively configure Datasette's permission system.
 
@@ -635,7 +784,7 @@ Actor is allowed to run arbitrary SQL queries against a specific database, e.g. 
 ``resource`` - string
     The name of the database
 
-Default *allow*.
+Default *allow*. See also :ref:`the default_allow_sql setting <setting_default_allow_sql>`.
 
 .. _permissions_permissions_debug:
 

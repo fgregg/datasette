@@ -138,7 +138,7 @@ class DatabaseView(DataView):
         attached_databases = [d.name for d in await db.attached_databases()]
 
         allow_execute_sql = await self.ds.permission_allowed(
-            request.actor, "execute-sql", database, default=True
+            request.actor, "execute-sql", database
         )
         return (
             {
@@ -380,7 +380,7 @@ class QueryView(DataView):
                 columns = []
 
         allow_execute_sql = await self.ds.permission_allowed(
-            request.actor, "execute-sql", database, default=True
+            request.actor, "execute-sql", database
         )
 
         async def extra_template():
@@ -618,6 +618,13 @@ class TableCreateView(BaseView):
         ignore = data.get("ignore")
         replace = data.get("replace")
 
+        if replace:
+            # Must have update-row permission
+            if not await self.ds.permission_allowed(
+                request.actor, "update-row", resource=database_name
+            ):
+                return _error(["Permission denied - need update-row"], 403)
+
         table_name = data.get("table")
         if not table_name:
             return _error(["Table is required"])
@@ -634,6 +641,13 @@ class TableCreateView(BaseView):
 
         if rows and row:
             return _error(["Cannot specify both rows and row"])
+
+        if rows or row:
+            # Must have insert-row permission
+            if not await self.ds.permission_allowed(
+                request.actor, "insert-row", resource=database_name
+            ):
+                return _error(["Permission denied - need insert-row"], 403)
 
         if columns:
             if rows or row:

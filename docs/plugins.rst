@@ -25,7 +25,7 @@ Things you can do with plugins include:
 * Customize how database values are rendered in the Datasette interface, for example
   `datasette-render-binary <https://github.com/simonw/datasette-render-binary>`__ and
   `datasette-pretty-json <https://github.com/simonw/datasette-pretty-json>`__.
-* Customize how Datasette's authentication and permissions systems work, for example `datasette-auth-tokens <https://github.com/simonw/datasette-auth-tokens>`__ and
+* Customize how Datasette's authentication and permissions systems work, for example `datasette-auth-passwords <https://github.com/simonw/datasette-auth-passwords>`__ and
   `datasette-permissions-sql <https://github.com/simonw/datasette-permissions-sql>`__.
 
 .. _plugins_installing:
@@ -153,7 +153,7 @@ If you run ``datasette plugins --all`` it will include default plugins that ship
             "hooks": [
                 "actor_from_request",
                 "permission_allowed",
-                "register_commands",
+                "register_permissions",
                 "skip_csrf"
             ]
         },

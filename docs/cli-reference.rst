@@ -122,6 +122,7 @@ Once started you can access it at ``http://localhost:8001``
                                       the root user
       --get TEXT                      Run an HTTP GET request against this path,
                                       print results and exit
+      --token TEXT                    API token to send with --get requests
       --version-note TEXT             Additional note to show on /-/versions
       --help-settings                 Show available settings
       --pdb                           Launch debugger on any errors
@@ -189,6 +190,8 @@ For example::
       }
     }
 
+You can use the ``--token TOKEN`` option to send an :ref:`API token <CreateTokenView>` with the simulated request.
+
 The exit code will be 0 if the request succeeds and 1 if the request produced an HTTP status code other than 200 - e.g. a 404 or 500 error.
 
 This lets you use ``datasette --get /`` to run tests against a Datasette application in a continuous integration environment such as GitHub Actions.
@@ -230,6 +233,8 @@ These can be passed to ``datasette serve`` using ``datasette serve --setting nam
       allow_download               Allow users to download the original SQLite
                                    database files (default=True)
       allow_signed_tokens          Allow users to create and use signed API tokens
+                                   (default=True)
+      default_allow_sql            Allow anyone to run arbitrary SQL queries
                                    (default=True)
       max_signed_tokens_ttl        Maximum allowed expiry time for signed API tokens
                                    (default=0)
@@ -617,12 +622,42 @@ Create a signed API token, see :ref:`authentication_cli_create_token`.
 
       Create a signed API token for the specified actor ID
 
+      Example:
+
+          datasette create-token root --secret mysecret
+
+      To allow only "view-database-download" for all databases:
+
+          datasette create-token root --secret mysecret \
+              --all view-database-download
+
+      To allow "create-table" against a specific database:
+
+          datasette create-token root --secret mysecret \
+              --database mydb create-table
+
+      To allow "insert-row" against a specific table:
+
+          datasette create-token root --secret myscret \
+              --resource mydb mytable insert-row
+
+      Restricted actions can be specified multiple times using multiple --all,
+      --database, and --resource options.
+
+      Add --debug to see a decoded version of the token.
+
     Options:
-      --secret TEXT                Secret used for signing the API tokens
-                                   [required]
-      -e, --expires-after INTEGER  Token should expire after this many seconds
-      --debug                      Show decoded token
-      --help                       Show this message and exit.
+      --secret TEXT                   Secret used for signing the API tokens
+                                      [required]
+      -e, --expires-after INTEGER     Token should expire after this many seconds
+      -a, --all ACTION                Restrict token to this action
+      -d, --database DB ACTION        Restrict token to this action on this database
+      -r, --resource DB RESOURCE ACTION
+                                      Restrict token to this action on this database
+                                      resource (a table, SQL view or named query)
+      --debug                         Show decoded token
+      --plugins-dir DIRECTORY         Path to directory containing custom plugins
+      --help                          Show this message and exit.
 
 
 .. [[[end]]]

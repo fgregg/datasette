@@ -387,17 +387,19 @@ class TableView(DataView):
             sort_desc = table_metadata.get("sort_desc")
 
         if sort and sort_desc:
-            raise DatasetteError("Cannot use _sort and _sort_desc at the same time")
+            raise DatasetteError(
+                "Cannot use _sort and _sort_desc at the same time", status=400
+            )
 
         if sort:
             if sort not in sortable_columns:
-                raise DatasetteError(f"Cannot sort table by {sort}")
+                raise DatasetteError(f"Cannot sort table by {sort}", status=400)
 
             order_by = escape_sqlite(sort)
 
         if sort_desc:
             if sort_desc not in sortable_columns:
-                raise DatasetteError(f"Cannot sort table by {sort_desc}")
+                raise DatasetteError(f"Cannot sort table by {sort_desc}", status=400)
 
             order_by = f"{escape_sqlite(sort_desc)} desc"
 
@@ -537,7 +539,7 @@ class TableView(DataView):
         results = await db.execute(sql, params, truncate=True, **extra_args)
 
         # Calculate the total count for this query
-        filtered_table_rows_count = None
+        count = None
         if (
             not db.is_mutable
             and self.ds.inspect_data
@@ -545,17 +547,17 @@ class TableView(DataView):
         ):
             # We can use a previously cached table row count
             try:
-                filtered_table_rows_count = self.ds.inspect_data[database_name][
-                    "tables"
-                ][table_name]["count"]
+                count = self.ds.inspect_data[database_name]["tables"][table_name][
+                    "count"
+                ]
             except KeyError:
                 pass
 
         # Otherwise run a select count(*) ...
-        if count_sql and filtered_table_rows_count is None and not nocount:
+        if count_sql and count is None and not nocount:
             try:
                 count_rows = list(await db.execute(count_sql, from_sql_params))
-                filtered_table_rows_count = count_rows[0][0]
+                count = count_rows[0][0]
             except QueryInterrupted:
                 pass
 
@@ -582,7 +584,7 @@ class TableView(DataView):
                     params=params,
                     table=table_name,
                     metadata=table_metadata,
-                    row_count=filtered_table_rows_count,
+                    row_count=count,
                 )
             )
 
@@ -851,7 +853,7 @@ class TableView(DataView):
                 "human_description_en": human_description_en,
                 "rows": rows[:page_size],
                 "truncated": results.truncated,
-                "filtered_table_rows_count": filtered_table_rows_count,
+                "count": count,
                 "expanded_columns": expanded_columns,
                 "expandable_columns": expandable_columns,
                 "columns": columns,
@@ -864,7 +866,7 @@ class TableView(DataView):
                 "next_url": next_url,
                 "private": private,
                 "allow_execute_sql": await self.ds.permission_allowed(
-                    request.actor, "execute-sql", database_name, default=True
+                    request.actor, "execute-sql", database_name
                 ),
             },
             extra_template,
