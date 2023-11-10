@@ -540,7 +540,6 @@ class QueryView(View):
 
         # Handle formats from plugins
         if format_ == "csv":
-            
 
             async def fetch_data_for_csv(request, _next=None):
                 results = await db.execute(sql, params, truncate=False)
