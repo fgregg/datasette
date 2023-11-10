@@ -434,11 +434,6 @@ class QueryView(View):
                     raise
                 canned_query_write = bool(canned_query.get("write"))
 
-        if _size == 0:
-            truncate = False
-        else:
-            truncate = True
-
         private = False
         if canned_query:
             # Respect canned query permissions
@@ -545,9 +540,10 @@ class QueryView(View):
 
         # Handle formats from plugins
         if format_ == "csv":
+            
 
             async def fetch_data_for_csv(request, _next=None):
-                results = await db.execute(sql, params, truncate=True)
+                results = await db.execute(sql, params, truncate=False)
                 data = {"rows": results.rows, "columns": results.columns}
                 return data, None, None
 
