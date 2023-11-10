@@ -60,7 +60,7 @@ def publish_subcommand(publish):
 
 
 @hookspec
-def render_cell(row, value, column, table, database, datasette):
+def render_cell(row, value, column, table, database, datasette, request):
     """Customize rendering of HTML table cell values"""
 
 
@@ -92,6 +92,11 @@ def register_commands(cli):
 @hookspec
 def actor_from_request(datasette, request):
     """Return an actor dictionary based on the incoming request"""
+
+
+@hookspec(firstresult=True)
+def actors_from_ids(datasette, actor_ids):
+    """Returns a dictionary mapping those IDs to actor dictionaries"""
 
 
 @hookspec

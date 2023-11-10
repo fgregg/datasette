@@ -271,7 +271,7 @@ Property exposing a ``collections.OrderedDict`` of databases currently connected
 
 The dictionary keys are the name of the database that is used in the URL - e.g. ``/fixtures`` would have a key of ``"fixtures"``. The values are :ref:`internals_database` instances.
 
-All databases are listed, irrespective of user permissions. This means that the ``_internal`` database will always be listed here.
+All databases are listed, irrespective of user permissions.
 
 .. _datasette_permissions:
 
@@ -280,7 +280,7 @@ All databases are listed, irrespective of user permissions. This means that the 
 
 Property exposing a dictionary of permissions that have been registered using the :ref:`plugin_register_permissions` plugin hook.
 
-The dictionary keys are the permission names - e.g. ``view-instance`` - and the values are ``Permission()`` named tuples describing the permission. Here is a :ref:`description of that tuple <plugin_register_permissions>`.
+The dictionary keys are the permission names - e.g. ``view-instance`` - and the values are ``Permission()`` objects describing the permission. Here is a :ref:`description of that object <plugin_register_permissions>`.
 
 .. _datasette_plugin_config:
 
@@ -296,7 +296,7 @@ The dictionary keys are the permission names - e.g. ``view-instance`` - and the 
 ``table`` - None or string
     The table the user is interacting with.
 
-This method lets you read plugin configuration values that were set in ``metadata.json``. See :ref:`writing_plugins_configuration` for full details of how this method should be used.
+This method lets you read plugin configuration values that were set in  ``datasette.yaml``. See :ref:`writing_plugins_configuration` for full details of how this method should be used.
 
 The return value will be the value from the configuration file - usually a dictionary.
 
@@ -322,6 +322,27 @@ await .render_template(template, context=None, request=None)
 
 Renders a `Jinja template <https://jinja.palletsprojects.com/en/2.11.x/>`__ using Datasette's preconfigured instance of Jinja and returns the resulting string. The template will have access to Datasette's default template functions and any functions that have been made available by other plugins.
 
+.. _datasette_actors_from_ids:
+
+await .actors_from_ids(actor_ids)
+---------------------------------
+
+``actor_ids`` - list of strings or integers
+    A list of actor IDs to look up.
+
+Returns a dictionary, where the keys are the IDs passed to it and the values are the corresponding actor dictionaries.
+
+This method is mainly designed to be used with plugins. See the :ref:`plugin_hook_actors_from_ids` documentation for details.
+
+If no plugins that implement that hook are installed, the default return value looks like this:
+
+.. code-block:: json
+
+    {
+        "1": {"id": "1"},
+        "2": {"id": "2"}
+    }
+
 .. _datasette_permission_allowed:
 
 await .permission_allowed(actor, action, resource=None, default=...)
@@ -343,7 +364,7 @@ await .permission_allowed(actor, action, resource=None, default=...)
 
 Check if the given actor has :ref:`permission <authentication_permissions>` to perform the given action on the given resource.
 
-Some permission checks are carried out against :ref:`rules defined in metadata.json <authentication_permissions_metadata>`, while other custom permissions may be decided by plugins that implement the :ref:`plugin_hook_permission_allowed` plugin hook.
+Some permission checks are carried out against :ref:`rules defined in datasette.yaml <authentication_permissions_config>`, while other custom permissions may be decided by plugins that implement the :ref:`plugin_hook_permission_allowed` plugin hook.
 
 If neither ``metadata.json`` nor any of the plugins provide an answer to the permission query the ``default`` argument will be returned.
 
@@ -469,6 +490,16 @@ The following example creates a token that can access ``view-instance`` and ``vi
         },
     )
 
+.. _datasette_get_permission:
+
+.get_permission(name_or_abbr)
+-----------------------------
+
+``name_or_abbr`` - string
+    The name or abbreviation of the permission to look up, e.g. ``view-table`` or ``vt``.
+
+Returns a :ref:`Permission object <plugin_register_permissions>` representing the permission, or raises a ``KeyError`` if one is not found.
+
 .. _datasette_get_database:
 
 .get_database(name)
@@ -478,6 +509,13 @@ The following example creates a token that can access ``view-instance`` and ``vi
     The name of the database - optional.
 
 Returns the specified database object. Raises a ``KeyError`` if the database does not exist. Call this method without an argument to return the first connected database.
+
+.. _get_internal_database:
+
+.get_internal_database()
+------------------------
+
+Returns a database object for reading and writing to the private :ref:`internal database <internals_internal>`.
 
 .. _datasette_add_database:
 
@@ -995,6 +1033,7 @@ For example:
 
     def delete_and_return_count(conn):
         conn.execute("delete from some_table where id > 5")
+        conn.commit()
         return conn.execute(
             "select count(*) from some_table"
         ).fetchone()[0]
@@ -1010,6 +1049,8 @@ For example:
 The value returned from ``await database.execute_write_fn(...)`` will be the return value from your function.
 
 If your function raises an exception that exception will be propagated up to the ``await`` line.
+
+If you see ``OperationalError: database table is locked`` errors you should check that you remembered to explicitly call ``conn.commit()`` in your write function.
 
 If you specify ``block=False`` the method becomes fire-and-forget, queueing your function to be executed and then allowing your code after the call to ``.execute_write_fn()`` to continue running while the underlying thread waits for an opportunity to run your function. A UUID representing the queued task will be returned. Any exceptions in your code will be silently swallowed.
 
@@ -1127,19 +1168,23 @@ You can selectively disable CSRF protection using the :ref:`plugin_hook_skip_csr
 
 .. _internals_internal:
 
-The _internal database
-======================
+Datasette's internal database
+=============================
 
-.. warning::
-    This API should be considered unstable - the structure of these tables may change prior to the release of Datasette 1.0.
+Datasette maintains an "internal" SQLite database used for configuration, caching, and storage. Plugins can store configuration, settings, and other data inside this database. By default, Datasette will use a temporary in-memory SQLite database as the internal database, which is created at startup and destroyed at shutdown. Users of Datasette can optionally pass in a ``--internal`` flag to specify the path to a SQLite database to use as the internal database, which will persist internal data across Datasette instances.
 
-Datasette maintains an in-memory SQLite database with details of the the databases, tables and columns for all of the attached databases.
+Datasette maintains tables called ``catalog_databases``, ``catalog_tables``, ``catalog_columns``, ``catalog_indexes``, ``catalog_foreign_keys`` with details of the attached databases and their schemas. These tables should not be considered a stable API - they may change between Datasette releases.
 
-By default all actors are denied access to the ``view-database`` permission for the ``_internal`` database, so the database is not visible to anyone unless they :ref:`sign in as root <authentication_root>`.
+The internal database is not exposed in the Datasette application by default, which means private data can safely be stored without worry of accidentally leaking information through the default Datasette interface and API. However, other plugins do have full read and write access to the internal database.
 
-Plugins can access this database by calling ``db = datasette.get_database("_internal")`` and then executing queries using the :ref:`Database API <internals_database>`.
+Plugins can access this database by calling ``internal_db = datasette.get_internal_database()`` and then executing queries using the :ref:`Database API <internals_database>`.
 
-You can explore an example of this database by `signing in as root <https://latest.datasette.io/login-as-root>`__ to the ``latest.datasette.io`` demo instance and then navigating to `latest.datasette.io/_internal <https://latest.datasette.io/_internal>`__.
+Plugin authors are asked to practice good etiquette when using the internal database, as all plugins use the same database to store data. For example:
+
+1. Use a unique prefix when creating tables, indices, and triggera in the internal database. If your plugin is called ``datasette-xyz``, then prefix names with ``datasette_xyz_*``.
+2. Avoid long-running write statements that may stall or block other plugins that are trying to write at the same time.
+3. Use temporary tables or shared in-memory attached databases when possible.
+4. Avoid implementing features that could expose private data stored in the internal database by other plugins.
 
 .. _internals_utils:
 
@@ -1272,6 +1317,7 @@ This example uses the :ref:`register_routes() <plugin_register_routes>` plugin h
             (r"/parallel-queries$", parallel_queries),
         ]
 
+Note that running parallel SQL queries in this way has `been known to cause problems in the past <https://github.com/simonw/datasette/issues/2189>`__, so treat this example with caution.
 
 Adding ``?_trace=1`` will show that the trace covers both of those child tasks.
 

@@ -830,9 +830,18 @@ _infinities = {float("inf"), float("-inf")}
 
 
 def remove_infinites(row):
-    if any((c in _infinities) if isinstance(c, float) else 0 for c in row):
+    to_check = row
+    if isinstance(row, dict):
+        to_check = row.values()
+    if not any((c in _infinities) if isinstance(c, float) else 0 for c in to_check):
+        return row
+    if isinstance(row, dict):
+        return {
+            k: (None if (isinstance(v, float) and v in _infinities) else v)
+            for k, v in row.items()
+        }
+    else:
         return [None if (isinstance(c, float) and c in _infinities) else c for c in row]
-    return row
 
 
 class StaticMount(click.ParamType):
@@ -1134,6 +1143,7 @@ def add_cors_headers(headers):
     headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
     headers["Access-Control-Expose-Headers"] = "Link"
     headers["Access-Control-Allow-Methods"] = "GET, POST, HEAD, OPTIONS"
+    headers["Access-Control-Max-Age"] = "3600"
 
 
 _TILDE_ENCODING_SAFE = frozenset(
@@ -1211,3 +1221,67 @@ async def row_sql_params_pks(db, table, pk_values):
     for i, pk_value in enumerate(pk_values):
         params[f"p{i}"] = pk_value
     return sql, params, pks
+
+
+def _handle_pair(key: str, value: str) -> dict:
+    """
+    Turn a key-value pair into a nested dictionary.
+    foo, bar => {'foo': 'bar'}
+    foo.bar, baz => {'foo': {'bar': 'baz'}}
+    foo.bar, [1, 2, 3] => {'foo': {'bar': [1, 2, 3]}}
+    foo.bar, "baz" => {'foo': {'bar': 'baz'}}
+    foo.bar, '{"baz": "qux"}' => {'foo': {'bar': "{'baz': 'qux'}"}}
+    """
+    try:
+        value = json.loads(value)
+    except json.JSONDecodeError:
+        # If it doesn't parse as JSON, treat it as a string
+        pass
+
+    keys = key.split(".")
+    result = current_dict = {}
+
+    for k in keys[:-1]:
+        current_dict[k] = {}
+        current_dict = current_dict[k]
+
+    current_dict[keys[-1]] = value
+    return result
+
+
+def _combine(base: dict, update: dict) -> dict:
+    """
+    Recursively merge two dictionaries.
+    """
+    for key, value in update.items():
+        if isinstance(value, dict) and key in base and isinstance(base[key], dict):
+            base[key] = _combine(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def pairs_to_nested_config(pairs: typing.List[typing.Tuple[str, typing.Any]]) -> dict:
+    """
+    Parse a list of key-value pairs into a nested dictionary.
+    """
+    result = {}
+    for key, value in pairs:
+        parsed_pair = _handle_pair(key, value)
+        result = _combine(result, parsed_pair)
+    return result
+
+
+def fail_if_plugins_in_metadata(metadata: dict, filename=None):
+    """If plugin config is inside metadata, raise an Exception"""
+    if metadata is not None and metadata.get("plugins") is not None:
+        suggested_extension = (
+            ".yaml"
+            if filename is not None
+            and (filename.endswith(".yaml") or filename.endswith(".yml"))
+            else ".json"
+        )
+        raise Exception(
+            f'Datasette no longer accepts plugin configuration in --metadata. Move your "plugins" configuration blocks to a separate file - we suggest calling that datasette.{suggested_extension} - and start Datasette with datasette -c datasette.{suggested_extension}. See https://docs.datasette.io/en/latest/configuration.html for more details.'
+        )
+    return metadata

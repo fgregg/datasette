@@ -19,7 +19,7 @@ def canned_write_client(tmpdir):
     with make_app_client(
         extra_databases={"data.db": "create table names (name text)"},
         template_dir=str(template_dir),
-        metadata={
+        config={
             "databases": {
                 "data": {
                     "queries": {
@@ -31,8 +31,14 @@ def canned_write_client(tmpdir):
                         },
                         "add_name_specify_id": {
                             "sql": "insert into names (rowid, name) values (:rowid, :name)",
+                            "on_success_message_sql": "select 'Name added: ' || :name || ' with rowid ' || :rowid",
                             "write": True,
                             "on_error_redirect": "/data/add_name_specify_id?error",
+                        },
+                        "add_name_specify_id_with_error_in_on_success_message_sql": {
+                            "sql": "insert into names (rowid, name) values (:rowid, :name)",
+                            "on_success_message_sql": "select this is bad SQL",
+                            "write": True,
                         },
                         "delete_name": {
                             "sql": "delete from names where rowid = :rowid",
@@ -57,7 +63,7 @@ def canned_write_client(tmpdir):
 def canned_write_immutable_client():
     with make_app_client(
         is_immutable=True,
-        metadata={
+        config={
             "databases": {
                 "fixtures": {
                     "queries": {
@@ -95,12 +101,12 @@ def test_insert(canned_write_client):
         csrftoken_from=True,
         cookies={"foo": "bar"},
     )
-    assert 302 == response.status
-    assert "/data/add_name?success" == response.headers["Location"]
     messages = canned_write_client.ds.unsign(
         response.cookies["ds_messages"], "messages"
     )
-    assert [["Query executed, 1 row affected", 1]] == messages
+    assert messages == [["Query executed, 1 row affected", 1]]
+    assert response.status == 302
+    assert response.headers["Location"] == "/data/add_name?success"
 
 
 @pytest.mark.parametrize(
@@ -166,7 +172,7 @@ def test_insert_error(canned_write_client):
     )
     assert [["UNIQUE constraint failed: names.rowid", 3]] == messages
     # How about with a custom error message?
-    canned_write_client.ds._metadata["databases"]["data"]["queries"][
+    canned_write_client.ds.config["databases"]["data"]["queries"][
         "add_name_specify_id"
     ]["on_error_message"] = "ERROR"
     response = canned_write_client.post(
@@ -177,6 +183,34 @@ def test_insert_error(canned_write_client):
     assert [["ERROR", 3]] == canned_write_client.ds.unsign(
         response.cookies["ds_messages"], "messages"
     )
+
+
+def test_on_success_message_sql(canned_write_client):
+    response = canned_write_client.post(
+        "/data/add_name_specify_id",
+        {"rowid": 5, "name": "Should be OK"},
+        csrftoken_from=True,
+    )
+    assert response.status == 302
+    assert response.headers["Location"] == "/data/add_name_specify_id"
+    messages = canned_write_client.ds.unsign(
+        response.cookies["ds_messages"], "messages"
+    )
+    assert messages == [["Name added: Should be OK with rowid 5", 1]]
+
+
+def test_error_in_on_success_message_sql(canned_write_client):
+    response = canned_write_client.post(
+        "/data/add_name_specify_id_with_error_in_on_success_message_sql",
+        {"rowid": 1, "name": "Should fail"},
+        csrftoken_from=True,
+    )
+    messages = canned_write_client.ds.unsign(
+        response.cookies["ds_messages"], "messages"
+    )
+    assert messages == [
+        ["Error running on_success_message_sql: no such column: bad", 3]
+    ]
 
 
 def test_custom_params(canned_write_client):
@@ -232,21 +266,22 @@ def test_canned_query_permissions_on_database_page(canned_write_client):
     query_names = {
         q["name"] for q in canned_write_client.get("/data.json").json["queries"]
     }
-    assert {
+    assert query_names == {
+        "add_name_specify_id_with_error_in_on_success_message_sql",
+        "from_hook",
+        "update_name",
+        "add_name_specify_id",
+        "from_async_hook",
         "canned_read",
         "add_name",
-        "add_name_specify_id",
-        "update_name",
-        "from_async_hook",
-        "from_hook",
-    } == query_names
+    }
 
     # With auth shows four
     response = canned_write_client.get(
         "/data.json",
         cookies={"ds_actor": canned_write_client.actor_cookie({"id": "root"})},
     )
-    assert 200 == response.status
+    assert response.status == 200
     query_names_and_private = sorted(
         [
             {"name": q["name"], "private": q["private"]}
@@ -257,6 +292,10 @@ def test_canned_query_permissions_on_database_page(canned_write_client):
     assert query_names_and_private == [
         {"name": "add_name", "private": False},
         {"name": "add_name_specify_id", "private": False},
+        {
+            "name": "add_name_specify_id_with_error_in_on_success_message_sql",
+            "private": False,
+        },
         {"name": "canned_read", "private": False},
         {"name": "delete_name", "private": True},
         {"name": "from_async_hook", "private": False},
@@ -277,7 +316,7 @@ def test_canned_query_permissions(canned_write_client):
 def magic_parameters_client():
     with make_app_client(
         extra_databases={"data.db": "create table logs (line text)"},
-        metadata={
+        config={
             "databases": {
                 "data": {
                     "queries": {
@@ -306,10 +345,10 @@ def magic_parameters_client():
     ],
 )
 def test_magic_parameters(magic_parameters_client, magic_parameter, expected_re):
-    magic_parameters_client.ds._metadata["databases"]["data"]["queries"]["runme_post"][
+    magic_parameters_client.ds.config["databases"]["data"]["queries"]["runme_post"][
         "sql"
     ] = f"insert into logs (line) values (:{magic_parameter})"
-    magic_parameters_client.ds._metadata["databases"]["data"]["queries"]["runme_get"][
+    magic_parameters_client.ds.config["databases"]["data"]["queries"]["runme_get"][
         "sql"
     ] = f"select :{magic_parameter} as result"
     cookies = {
@@ -345,7 +384,7 @@ def test_magic_parameters(magic_parameters_client, magic_parameter, expected_re)
 @pytest.mark.parametrize("use_csrf", [True, False])
 @pytest.mark.parametrize("return_json", [True, False])
 def test_magic_parameters_csrf_json(magic_parameters_client, use_csrf, return_json):
-    magic_parameters_client.ds._metadata["databases"]["data"]["queries"]["runme_post"][
+    magic_parameters_client.ds.config["databases"]["data"]["queries"]["runme_post"][
         "sql"
     ] = "insert into logs (line) values (:_header_host)"
     qs = ""
@@ -382,11 +421,11 @@ def test_magic_parameters_cannot_be_used_in_arbitrary_queries(magic_parameters_c
 def test_canned_write_custom_template(canned_write_client):
     response = canned_write_client.get("/data/update_name")
     assert response.status == 200
+    assert "!!!CUSTOM_UPDATE_NAME_TEMPLATE!!!" in response.text
     assert (
         "<!-- Templates considered: *query-data-update_name.html, query-data.html, query.html -->"
         in response.text
     )
-    assert "!!!CUSTOM_UPDATE_NAME_TEMPLATE!!!" in response.text
     # And test for link rel=alternate while we're here:
     assert (
         '<link rel="alternate" type="application/json+datasette" href="http://localhost/data/update_name.json">'

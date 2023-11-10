@@ -4,6 +4,125 @@
 Changelog
 =========
 
+.. _v0_64_5:
+
+0.64.5 (2023-10-08)
+-------------------
+
+- Dropped dependency on ``click-default-group-wheel``, which could cause a dependency conflict. (:issue:`2197`)
+
+.. _v1_0_a7:
+
+1.0a7 (2023-09-21)
+------------------
+
+- Fix for a crashing bug caused by viewing the table page for a named in-memory database. (:issue:`2189`)
+
+.. _v0_64_4:
+
+0.64.4 (2023-09-21)
+-------------------
+
+- Fix for a crashing bug caused by viewing the table page for a named in-memory database. (:issue:`2189`)
+
+.. _v1_0_a6:
+
+1.0a6 (2023-09-07)
+------------------
+
+- New plugin hook: :ref:`plugin_hook_actors_from_ids` and an internal method to accompany it, :ref:`datasette_actors_from_ids`. This mechanism is intended to be used by plugins that may need to display the actor who was responsible for something managed by that plugin: they can now resolve the recorded IDs of actors into the full actor objects. (:issue:`2181`)
+- ``DATASETTE_LOAD_PLUGINS`` environment variable for :ref:`controlling which plugins <plugins_datasette_load_plugins>` are loaded by Datasette. (:issue:`2164`)
+- Datasette now checks if the user has permission to view a table linked to by a foreign key before turning that foreign key into a clickable link. (:issue:`2178`)
+- The ``execute-sql`` permission now implies that the actor can also view the database and instance. (:issue:`2169`)
+- Documentation describing a pattern for building plugins that themselves :ref:`define further hooks <writing_plugins_extra_hooks>` for other plugins. (:issue:`1765`)
+- Datasette is now tested against the Python 3.12 preview. (`#2175 <https://github.com/simonw/datasette/pull/2175>`__)
+
+.. _v1_0_a5:
+
+1.0a5 (2023-08-29)
+------------------
+
+- When restrictions are applied to :ref:`API tokens <CreateTokenView>`, those restrictions now behave slightly differently: applying the ``view-table`` restriction will imply the ability to ``view-database`` for the database containing that table, and both ``view-table`` and ``view-database`` will imply ``view-instance``. Previously you needed to create a token with restrictions that explicitly listed ``view-instance`` and ``view-database`` and ``view-table`` in order to view a table without getting a permission denied error. (:issue:`2102`)
+- New ``datasette.yaml`` (or ``.json``) configuration file, which can be specified using ``datasette -c path-to-file``. The goal here to consolidate settings, plugin configuration, permissions, canned queries, and other Datasette configuration into a single single file, separate from ``metadata.yaml``. The legacy ``settings.json`` config file used for :ref:`config_dir` has been removed, and ``datasette.yaml`` has a ``"settings"`` section where the same settings key/value pairs can be included. In the next future alpha release, more configuration such as plugins/permissions/canned queries will be moved to the ``datasette.yaml`` file. See :issue:`2093` for more details. Thanks, Alex Garcia.
+- The ``-s/--setting`` option can now take dotted paths to nested settings. These will then be used to set or over-ride the same options as are present in the new configuration file. (:issue:`2156`)
+- New ``--actor '{"id": "json-goes-here"}'`` option for use with ``datasette --get`` to treat the simulated request as being made by a specific actor, see :ref:`cli_datasette_get`. (:issue:`2153`)
+- The Datasette ``_internal`` database has had some changes. It no longer shows up in the ``datasette.databases`` list by default, and is now instead available to plugins using the ``datasette.get_internal_database()``. Plugins are invited to use this as a private database to store configuration and settings and secrets that should not be made visible through the default Datasette interface. Users can pass the new  ``--internal internal.db`` option to persist that internal database to disk. Thanks, Alex Garcia. (:issue:`2157`).
+
+.. _v1_0_a4:
+
+1.0a4 (2023-08-21)
+------------------
+
+This alpha fixes a security issue with the ``/-/api`` API explorer. On authenticated Datasette instances (instances protected using plugins such as `datasette-auth-passwords <https://datasette.io/plugins/datasette-auth-passwords>`__) the API explorer interface could reveal the names of databases and tables within the protected instance. The data stored in those tables was not revealed.
+
+For more information and workarounds, read `the security advisory <https://github.com/simonw/datasette/security/advisories/GHSA-7ch3-7pp7-7cpq>`__. The issue has been present in every previous alpha version of Datasette 1.0: versions 1.0a0, 1.0a1, 1.0a2 and 1.0a3.
+
+Also in this alpha:
+
+- The new ``datasette plugins --requirements`` option outputs a list of currently installed plugins in Python ``requirements.txt`` format, useful for duplicating that installation elsewhere. (:issue:`2133`)
+- :ref:`canned_queries_writable` can now define a ``on_success_message_sql`` field in their configuration, containing a SQL query that should be executed upon successful completion of the write operation in order to generate a message to be shown to the user. (:issue:`2138`)
+- The automatically generated border color for a database is now shown in more places around the application. (:issue:`2119`)
+- Every instance of example shell script code in the documentation should now include a working copy button, free from additional syntax. (:issue:`2140`)
+
+.. _v1_0_a3:
+
+1.0a3 (2023-08-09)
+------------------
+
+This alpha release previews the updated design for Datasette's default JSON API. (:issue:`782`)
+
+The new :ref:`default JSON representation <json_api_default>` for both table pages (``/dbname/table.json``) and arbitrary SQL queries (``/dbname.json?sql=...``) is now shaped like this:
+
+.. code-block:: json
+
+    {
+      "ok": true,
+      "rows": [
+        {
+          "id": 3,
+          "name": "Detroit"
+        },
+        {
+          "id": 2,
+          "name": "Los Angeles"
+        },
+        {
+          "id": 4,
+          "name": "Memnonia"
+        },
+        {
+          "id": 1,
+          "name": "San Francisco"
+        }
+      ],
+      "truncated": false
+    }
+
+Tables will include an additional ``"next"`` key for pagination, which can be passed to ``?_next=`` to fetch the next page of results.
+
+The various ``?_shape=`` options continue to work as before - see :ref:`json_api_shapes` for details.
+
+A new ``?_extra=`` mechanism is available for tables, but has not yet been stabilized or documented. Details on that are available in :issue:`262`.
+
+Smaller changes
+~~~~~~~~~~~~~~~
+
+- Datasette documentation now shows YAML examples for :ref:`metadata` by default, with a tab interface for switching to JSON. (:issue:`1153`)
+- :ref:`plugin_register_output_renderer` plugins now have access to ``error`` and ``truncated`` arguments, allowing them to display error messages and take into account truncated results. (:issue:`2130`)
+- ``render_cell()`` plugin hook now also supports an optional ``request`` argument. (:issue:`2007`)
+- New ``Justfile`` to support development workflows for Datasette using `Just <https://github.com/casey/just>`__.
+- ``datasette.render_template()`` can now accepts a ``datasette.views.Context`` subclass as an alternative to a dictionary. (:issue:`2127`)
+- ``datasette install -e path`` option for editable installations, useful while developing plugins. (:issue:`2106`)
+- When started with the ``--cors`` option Datasette now serves an ``Access-Control-Max-Age: 3600`` header, ensuring CORS OPTIONS requests are repeated no more than once an hour. (:issue:`2079`)
+- Fixed a bug where the ``_internal`` database could display ``None`` instead of ``null`` for in-memory databases. (:issue:`1970`)
+
+.. _v0_64_2:
+
+0.64.2 (2023-03-08)
+-------------------
+
+- Fixed a bug with ``datasette publish cloudrun`` where deploys all used the same Docker image tag. This was mostly inconsequential as the service is deployed as soon as the image has been pushed to the registry, but could result in the incorrect image being deployed if two different deploys for two separate services ran at exactly the same time. (:issue:`2036`)
+
 .. _v0_64_1:
 
 0.64.1 (2023-01-11)
@@ -154,7 +273,7 @@ Documentation
 
 Datasette can now run entirely in your browser using WebAssembly. Try out `Datasette Lite <https://lite.datasette.io/>`__, take a look `at the code <https://github.com/simonw/datasette-lite>`__ or read more about it in `Datasette Lite: a server-side Python web application running in a browser <https://simonwillison.net/2022/May/4/datasette-lite/>`__.
 
-Datasette now has a `Discord community <https://discord.gg/ktd74dm5mw>`__ for questions and discussions about Datasette and its ecosystem of projects.
+Datasette now has a `Discord community <https://datasette.io/discord>`__ for questions and discussions about Datasette and its ecosystem of projects.
 
 Features
 ~~~~~~~~
@@ -865,7 +984,10 @@ Prior to this release the Datasette ecosystem has treated authentication as excl
 
 You'll need to install plugins if you want full user accounts, but default Datasette can now authenticate a single root user with the new ``--root`` command-line option, which outputs a one-time use URL to :ref:`authenticate as a root actor <authentication_root>` (:issue:`784`)::
 
-    $ datasette fixtures.db --root
+    datasette fixtures.db --root
+
+::
+
     http://127.0.0.1:8001/-/auth-token?token=5b632f8cd44b868df625f5a6e2185d88eea5b22237fd3cc8773f107cc4fd6477
     INFO:     Started server process [14973]
     INFO:     Waiting for application startup.
@@ -1036,7 +1158,7 @@ You can now create :ref:`custom pages <custom_pages>` within your Datasette inst
 
 :ref:`config_dir` (:issue:`731`) allows you to define a custom Datasette instance as a directory. So instead of running the following::
 
-    $ datasette one.db two.db \
+    datasette one.db two.db \
       --metadata=metadata.json \
       --template-dir=templates/ \
       --plugins-dir=plugins \
@@ -1044,7 +1166,7 @@ You can now create :ref:`custom pages <custom_pages>` within your Datasette inst
 
 You can instead arrange your files in a single directory called ``my-project`` and run this::
 
-    $ datasette my-project/
+    datasette my-project/
 
 Also in this release:
 
@@ -1716,7 +1838,10 @@ In addition to the work on facets:
 
   Added new help section::
 
-      $ datasette --help-config
+      datasette --help-config
+
+  ::
+
       Config options:
         default_page_size            Default page size for the table view
                                      (default=100)

@@ -184,10 +184,12 @@ This will return the ``{"latitude_column": "lat", "longitude_column": "lng"}`` i
 
 If there is no configuration for that plugin, the method will return ``None``.
 
-If it cannot find the requested configuration at the table layer, it will fall back to the database layer and then the root layer. For example, a user may have set the plugin configuration option like so::
+If it cannot find the requested configuration at the table layer, it will fall back to the database layer and then the root layer. For example, a user may have set the plugin configuration option inside ``datasette.yaml`` like so:
 
-    {
-        "databases: {
+.. [[[cog
+    from metadata_doc import metadata_example
+    metadata_example(cog, {
+        "databases": {
             "sf-trees": {
                 "plugins": {
                     "datasette-cluster-map": {
@@ -197,21 +199,77 @@ If it cannot find the requested configuration at the table layer, it will fall b
                 }
             }
         }
-    }
+    })
+.. ]]]
+
+.. tab:: metadata.yaml
+
+    .. code-block:: yaml
+
+        databases:
+          sf-trees:
+            plugins:
+              datasette-cluster-map:
+                latitude_column: xlat
+                longitude_column: xlng
+
+
+.. tab:: metadata.json
+
+    .. code-block:: json
+
+        {
+          "databases": {
+            "sf-trees": {
+              "plugins": {
+                "datasette-cluster-map": {
+                  "latitude_column": "xlat",
+                  "longitude_column": "xlng"
+                }
+              }
+            }
+          }
+        }
+.. [[[end]]]
 
 In this case, the above code would return that configuration for ANY table within the ``sf-trees`` database.
 
-The plugin configuration could also be set at the top level of ``metadata.json``::
+The plugin configuration could also be set at the top level of ``datasette.yaml``:
 
-    {
-        "title": "This is the top-level title in metadata.json",
+.. [[[cog
+    metadata_example(cog, {
         "plugins": {
             "datasette-cluster-map": {
                 "latitude_column": "xlat",
                 "longitude_column": "xlng"
             }
         }
-    }
+    })
+.. ]]]
+
+.. tab:: metadata.yaml
+
+    .. code-block:: yaml
+
+        plugins:
+          datasette-cluster-map:
+            latitude_column: xlat
+            longitude_column: xlng
+
+
+.. tab:: metadata.json
+
+    .. code-block:: json
+
+        {
+          "plugins": {
+            "datasette-cluster-map": {
+              "latitude_column": "xlat",
+              "longitude_column": "xlng"
+            }
+          }
+        }
+.. [[[end]]]
 
 Now that ``datasette-cluster-map`` plugin configuration will apply to every table in every database.
 
@@ -234,7 +292,7 @@ To avoid accidentally conflicting with a database file that may be loaded into D
 
 - ``/-/upload-excel``
 
-Try to avoid registering URLs that clash with other plugins that your users might have installed. There is no central repository of reserved URL paths (yet) but you can review existing plugins by browsing the `plugins directory <https://datasette.io/plugins>`.
+Try to avoid registering URLs that clash with other plugins that your users might have installed. There is no central repository of reserved URL paths (yet) but you can review existing plugins by browsing the `plugins directory <https://datasette.io/plugins>`__.
 
 If your plugin includes functionality that relates to a specific database you could also register a URL route like this:
 
@@ -264,3 +322,65 @@ This object is exposed in templates as the ``urls`` variable, which can be used 
     Back to the <a href="{{ urls.instance() }}">Homepage</a>
 
 See :ref:`internals_datasette_urls` for full details on this object.
+
+.. _writing_plugins_extra_hooks:
+
+Plugins that define new plugin hooks
+------------------------------------
+
+Plugins can define new plugin hooks that other plugins can use to further extend their functionality.
+
+`datasette-graphql <https://github.com/simonw/datasette-graphql>`__ is one example of a plugin that does this. It defines a new hook called ``graphql_extra_fields``, `described here <https://github.com/simonw/datasette-graphql/blob/main/README.md#adding-custom-fields-with-plugins>`__, which other plugins can use to define additional fields that should be included in the GraphQL schema.
+
+To define additional hooks, add a file to the plugin called ``datasette_your_plugin/hookspecs.py`` with content that looks like this:
+
+.. code-block:: python
+
+    from pluggy import HookspecMarker
+
+    hookspec = HookspecMarker("datasette")
+
+
+    @hookspec
+    def name_of_your_hook_goes_here(datasette):
+        "Description of your hook."
+
+You should define your own hook name and arguments here, following the documentation for `Pluggy specifications <https://pluggy.readthedocs.io/en/stable/#specs>`__. Make sure to pick a name that is unlikely to clash with hooks provided by any other plugins.
+
+Then, to register your plugin hooks, add the following code to your ``datasette_your_plugin/__init__.py`` file:
+
+.. code-block:: python
+
+    from datasette.plugins import pm
+    from . import hookspecs
+
+    pm.add_hookspecs(hookspecs)
+
+This will register your plugin hooks as part of the ``datasette`` plugin hook namespace.
+
+Within your plugin code you can trigger the hook using this pattern:
+
+.. code-block:: python
+
+    from datasette.plugins import pm
+
+    for (
+        plugin_return_value
+    ) in pm.hook.name_of_your_hook_goes_here(
+        datasette=datasette
+    ):
+        # Do something with plugin_return_value
+        pass
+
+Other plugins will then be able to register their own implementations of your hook using this syntax:
+
+.. code-block:: python
+
+    from datasette import hookimpl
+
+
+    @hookimpl
+    def name_of_your_hook_goes_here(datasette):
+        return "Response from this plugin hook"
+
+These plugin implementations can accept 0 or more of the named arguments that you defined in your hook specification.

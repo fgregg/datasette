@@ -380,8 +380,8 @@ Examples: `datasette-publish-fly <https://datasette.io/plugins/datasette-publish
 
 .. _plugin_hook_render_cell:
 
-render_cell(row, value, column, table, database, datasette)
------------------------------------------------------------
+render_cell(row, value, column, table, database, datasette, request)
+--------------------------------------------------------------------
 
 Lets you customize the display of values within table cells in the HTML table view.
 
@@ -402,6 +402,9 @@ Lets you customize the display of values within table cells in the HTML table vi
 
 ``datasette`` - :ref:`internals_datasette`
     You can use this to access plugin configuration options via ``datasette.plugin_config(your_plugin_name)``, or to execute SQL queries.
+
+``request`` - :ref:`internals_request`
+    The current request object
 
 If your hook returns ``None``, it will be ignored. Use this to indicate that your hook is not able to custom render this particular value.
 
@@ -485,7 +488,7 @@ This will register ``render_demo`` to be called when paths with the extension ``
 
 ``render_demo`` is a Python function. It can be a regular function or an ``async def render_demo()`` awaitable function, depending on if it needs to make any asynchronous calls.
 
-``can_render_demo`` is a Python function (or ``async def`` function) which acepts the same arguments as ``render_demo`` but just returns ``True`` or ``False``. It lets Datasette know if the current SQL query can be represented by the plugin - and hence influnce if a link to this output format is displayed in the user interface. If you omit the ``"can_render"`` key from the dictionary every query will be treated as being supported by the plugin.
+``can_render_demo`` is a Python function (or ``async def`` function) which accepts the same arguments as ``render_demo`` but just returns ``True`` or ``False``. It lets Datasette know if the current SQL query can be represented by the plugin - and hence influnce if a link to this output format is displayed in the user interface. If you omit the ``"can_render"`` key from the dictionary every query will be treated as being supported by the plugin.
 
 When a request is received, the ``"render"`` callback function is called with zero or more of the following arguments. Datasette will inspect your callback function and pass arguments that match its function signature.
 
@@ -512,6 +515,12 @@ When a request is received, the ``"render"`` callback function is called with ze
 
 ``request`` - :ref:`internals_request`
     The current HTTP request.
+
+``error`` - string or None
+    If an error occurred this string will contain the error message.
+
+``truncated`` - bool or None
+    If the query response was truncated - for example a SQL query returning more than 1,000 results where pagination is not available - this will be ``True``.
 
 ``view_name`` - string
     The name of the current view being called. ``index``, ``database``, ``table``, and ``row`` are the most important ones.
@@ -785,24 +794,24 @@ If your plugin needs to register additional permissions unique to that plugin - 
             )
         ]
 
-The fields of the ``Permission`` named tuple are as follows:
+The fields of the ``Permission`` class are as follows:
 
-``name``
+``name`` - string
     The name of the permission, e.g. ``upload-csvs``. This should be unique across all plugins that the user might have installed, so choose carefully.
 
-``abbr``
+``abbr`` - string or None
     An abbreviation of the permission, e.g. ``uc``. This is optional - you can set it to ``None`` if you do not want to pick an abbreviation. Since this needs to be unique across all installed plugins it's best not to specify an abbreviation at all. If an abbreviation is provided it will be used when creating restricted signed API tokens.
 
-``description``
+``description`` - string or None
     A human-readable description of what the permission lets you do. Should make sense as the second part of a sentence that starts "A user with this permission can ...".
 
-``takes_database``
+``takes_database`` - boolean
     ``True`` if this permission can be granted on a per-database basis, ``False`` if it is only valid at the overall Datasette instance level.
 
-``takes_resource``
+``takes_resource`` - boolean
     ``True`` if this permission can be granted on a per-resource basis. A resource is a database table, SQL view or :ref:`canned query <canned_queries>`.
 
-``default``
+``default`` - boolean
     The default value for this permission if it is not explicitly granted to a user. ``True`` means the permission is granted by default, ``False`` means it is not.
 
     This should only be ``True`` if you want anonymous users to be able to take this action.
@@ -866,7 +875,9 @@ Examples: `datasette-cors <https://datasette.io/plugins/datasette-cors>`__, `dat
 startup(datasette)
 ------------------
 
-This hook fires when the Datasette application server first starts up. You can implement a regular function, for example to validate required plugin configuration:
+This hook fires when the Datasette application server first starts up.
+
+Here is an example that validates required plugin configuration. The server will fail to start and show an error if the validation check fails:
 
 .. code-block:: python
 
@@ -877,7 +888,7 @@ This hook fires when the Datasette application server first starts up. You can i
             "required-setting" in config
         ), "my-plugin requires setting required-setting"
 
-Or you can return an async function which will be awaited on startup. Use this option if you need to make any database queries:
+You can also return an async function, which will be awaited on startup. Use this option if you need to execute any database queries, for example this function which creates the ``my_table`` database table if it does not yet exist:
 
 .. code-block:: python
 
@@ -898,7 +909,7 @@ Potential use-cases:
 
 * Run some initialization code for the plugin
 * Create database tables that a plugin needs on startup
-* Validate the metadata configuration for a plugin on startup, and raise an error if it is invalid
+* Validate the configuration for a plugin on startup, and raise an error if it is invalid
 
 .. note::
 
@@ -1031,7 +1042,7 @@ Here's an example that authenticates the actor based on an incoming API key:
 
 If you install this in your plugins directory you can test it like this::
 
-    $ curl -H 'Authorization: Bearer this-is-a-secret' http://localhost:8003/-/actor.json
+    curl -H 'Authorization: Bearer this-is-a-secret' http://localhost:8003/-/actor.json
 
 Instead of returning a dictionary, this function can return an awaitable function which itself returns either ``None`` or a dictionary. This is useful for authentication functions that need to make a database query - for example:
 
@@ -1059,6 +1070,63 @@ Instead of returning a dictionary, this function can return an awaitable functio
         return inner
 
 Examples: `datasette-auth-tokens <https://datasette.io/plugins/datasette-auth-tokens>`_, `datasette-auth-passwords <https://datasette.io/plugins/datasette-auth-passwords>`_
+
+.. _plugin_hook_actors_from_ids:
+
+actors_from_ids(datasette, actor_ids)
+-------------------------------------
+
+``datasette`` - :ref:`internals_datasette`
+    You can use this to access plugin configuration options via ``datasette.plugin_config(your_plugin_name)``, or to execute SQL queries.
+
+``actor_ids`` - list of strings or integers
+    The actor IDs to look up.
+
+The hook must return a dictionary that maps the incoming actor IDs to their full dictionary representation.
+
+Some plugins that implement social features may store the ID of the :ref:`actor <authentication_actor>` that performed an action - added a comment, bookmarked a table or similar - and then need a way to resolve those IDs into display-friendly actor dictionaries later on.
+
+Unlike other plugin hooks, this only uses the first implementation of the hook to return a result. You can expect users to only have a single plugin installed that implements this hook.
+
+If no plugin is installed, Datasette defaults to returning actors that are just ``{"id": actor_id}``.
+
+The hook can return a dictionary or an awaitable function that then returns a dictionary.
+
+This example implementation returns actors from a database table:
+
+.. code-block:: python
+
+    from datasette import hookimpl
+
+
+    @hookimpl
+    def actors_from_ids(datasette, actor_ids):
+        db = datasette.get_database("actors")
+
+        async def inner():
+            sql = "select id, name from actors where id in ({})".format(
+                ", ".join("?" for _ in actor_ids)
+            )
+            actors = {}
+            for row in (await db.execute(sql, actor_ids)).rows:
+                actor = dict(row)
+                actors[actor["id"]] = actor
+            return actors
+
+        return inner
+
+The returned dictionary from this example looks like this:
+
+.. code-block:: json
+
+    {
+        "1": {"id": "1", "name": "Tony"},
+        "2": {"id": "2", "name": "Tina"},
+    }
+
+These IDs could be integers or strings, depending on how the actors used by the Datasette instance are configured.
+
+Example: `datasette-remote-actors <https://github.com/datasette/datasette-remote-actors>`_
 
 .. _plugin_hook_filters_from_request:
 
@@ -1428,7 +1496,37 @@ database_actions(datasette, actor, database, request)
 
 This hook is similar to :ref:`plugin_hook_table_actions` but populates an actions menu on the database page.
 
-Example: `datasette-graphql <https://datasette.io/plugins/datasette-graphql>`_
+This example adds a new database action for creating a table, if the user has the ``edit-schema`` permission:
+
+.. code-block:: python
+
+    from datasette import hookimpl
+
+
+    @hookimpl
+    def database_actions(datasette, actor, database):
+        async def inner():
+            if not await datasette.permission_allowed(
+                actor,
+                "edit-schema",
+                resource=database,
+                default=False,
+            ):
+                return []
+            return [
+                {
+                    "href": datasette.urls.path(
+                        "/-/edit-schema/{}/-/create".format(
+                            database
+                        )
+                    ),
+                    "label": "Create a table",
+                }
+            ]
+
+        return inner
+
+Example: `datasette-graphql <https://datasette.io/plugins/datasette-graphql>`_, `datasette-edit-schema <https://datasette.io/plugins/datasette-edit-schema>`_
 
 .. _plugin_hook_skip_csrf:
 

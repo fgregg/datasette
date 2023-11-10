@@ -115,13 +115,14 @@ async def test_hook_extra_css_urls(ds_client, path, expected_decoded_object):
     assert response.status_code == 200
     links = Soup(response.text, "html.parser").findAll("link")
     special_href = [
-        l for l in links if l.attrs["href"].endswith("/extra-css-urls-demo.css")
+        link
+        for link in links
+        if link.attrs["href"].endswith("/extra-css-urls-demo.css")
     ][0]["href"]
     # This link has a base64-encoded JSON blob in it
     encoded = special_href.split("/")[3]
-    assert expected_decoded_object == json.loads(
-        base64.b64decode(encoded).decode("utf8")
-    )
+    actual_decoded_object = json.loads(base64.b64decode(encoded).decode("utf8"))
+    assert expected_decoded_object == actual_decoded_object
 
 
 @pytest.mark.asyncio
@@ -187,7 +188,9 @@ async def test_hook_render_cell_link_from_json(ds_client):
 
 @pytest.mark.asyncio
 async def test_hook_render_cell_demo(ds_client):
-    response = await ds_client.get("/fixtures/simple_primary_key?id=4")
+    response = await ds_client.get(
+        "/fixtures/simple_primary_key?id=4&_render_cell_extra=1"
+    )
     soup = Soup(response.text, "html.parser")
     td = soup.find("td", {"class": "col-content"})
     assert json.loads(td.string) == {
@@ -196,6 +199,7 @@ async def test_hook_render_cell_demo(ds_client):
         "table": "simple_primary_key",
         "database": "fixtures",
         "config": {"depth": "table", "special": "this-is-simple_primary_key"},
+        "render_cell_extra": 1,
     }
 
 
@@ -230,9 +234,6 @@ async def test_plugin_config(ds_client):
 async def test_plugin_config_env(ds_client):
     os.environ["FOO_ENV"] = "FROM_ENVIRONMENT"
     assert {"foo": "FROM_ENVIRONMENT"} == ds_client.ds.plugin_config("env-plugin")
-    # Ensure secrets aren't visible in /-/metadata.json
-    metadata = await ds_client.get("/-/metadata.json")
-    assert {"foo": {"$env": "FOO_ENV"}} == metadata.json()["plugins"]["env-plugin"]
     del os.environ["FOO_ENV"]
 
 
@@ -242,11 +243,6 @@ async def test_plugin_config_env_from_list(ds_client):
     assert [{"in_a_list": "FROM_ENVIRONMENT"}] == ds_client.ds.plugin_config(
         "env-plugin-list"
     )
-    # Ensure secrets aren't visible in /-/metadata.json
-    metadata = await ds_client.get("/-/metadata.json")
-    assert [{"in_a_list": {"$env": "FOO_ENV"}}] == metadata.json()["plugins"][
-        "env-plugin-list"
-    ]
     del os.environ["FOO_ENV"]
 
 
@@ -255,11 +251,6 @@ async def test_plugin_config_file(ds_client):
     with open(TEMP_PLUGIN_SECRET_FILE, "w") as fp:
         fp.write("FROM_FILE")
     assert {"foo": "FROM_FILE"} == ds_client.ds.plugin_config("file-plugin")
-    # Ensure secrets aren't visible in /-/metadata.json
-    metadata = await ds_client.get("/-/metadata.json")
-    assert {"foo": {"$file": TEMP_PLUGIN_SECRET_FILE}} == metadata.json()["plugins"][
-        "file-plugin"
-    ]
     os.remove(TEMP_PLUGIN_SECRET_FILE)
 
 
@@ -325,7 +316,7 @@ def test_hook_extra_body_script(app_client, path, expected_extra_body_script):
 @pytest.mark.asyncio
 async def test_hook_asgi_wrapper(ds_client):
     response = await ds_client.get("/fixtures")
-    assert "_internal, fixtures" == response.headers["x-databases"]
+    assert "fixtures" == response.headers["x-databases"]
 
 
 def test_hook_extra_template_vars(restore_working_directory):
@@ -540,7 +531,7 @@ async def test_hook_register_output_renderer_can_render(ds_client):
         .find("p", {"class": "export-links"})
         .findAll("a")
     )
-    actual = [l["href"] for l in links]
+    actual = [link["href"] for link in links]
     # Should not be present because we sent ?_no_can_render=1
     assert "/fixtures/facetable.testall?_labels=on" not in actual
     # Check that it was passed the values we expected
@@ -592,42 +583,42 @@ def test_hook_publish_subcommand():
 @pytest.mark.asyncio
 async def test_hook_register_facet_classes(ds_client):
     response = await ds_client.get(
-        "/fixtures/compound_three_primary_keys.json?_dummy_facet=1"
+        "/fixtures/compound_three_primary_keys.json?_dummy_facet=1&_extra=suggested_facets"
     )
-    assert [
+    assert response.json()["suggested_facets"] == [
         {
             "name": "pk1",
-            "toggle_url": "http://localhost/fixtures/compound_three_primary_keys.json?_dummy_facet=1&_facet_dummy=pk1",
+            "toggle_url": "http://localhost/fixtures/compound_three_primary_keys.json?_dummy_facet=1&_extra=suggested_facets&_facet_dummy=pk1",
             "type": "dummy",
         },
         {
             "name": "pk2",
-            "toggle_url": "http://localhost/fixtures/compound_three_primary_keys.json?_dummy_facet=1&_facet_dummy=pk2",
+            "toggle_url": "http://localhost/fixtures/compound_three_primary_keys.json?_dummy_facet=1&_extra=suggested_facets&_facet_dummy=pk2",
             "type": "dummy",
         },
         {
             "name": "pk3",
-            "toggle_url": "http://localhost/fixtures/compound_three_primary_keys.json?_dummy_facet=1&_facet_dummy=pk3",
+            "toggle_url": "http://localhost/fixtures/compound_three_primary_keys.json?_dummy_facet=1&_extra=suggested_facets&_facet_dummy=pk3",
             "type": "dummy",
         },
         {
             "name": "content",
-            "toggle_url": "http://localhost/fixtures/compound_three_primary_keys.json?_dummy_facet=1&_facet_dummy=content",
+            "toggle_url": "http://localhost/fixtures/compound_three_primary_keys.json?_dummy_facet=1&_extra=suggested_facets&_facet_dummy=content",
             "type": "dummy",
         },
         {
             "name": "pk1",
-            "toggle_url": "http://localhost/fixtures/compound_three_primary_keys.json?_dummy_facet=1&_facet=pk1",
+            "toggle_url": "http://localhost/fixtures/compound_three_primary_keys.json?_dummy_facet=1&_extra=suggested_facets&_facet=pk1",
         },
         {
             "name": "pk2",
-            "toggle_url": "http://localhost/fixtures/compound_three_primary_keys.json?_dummy_facet=1&_facet=pk2",
+            "toggle_url": "http://localhost/fixtures/compound_three_primary_keys.json?_dummy_facet=1&_extra=suggested_facets&_facet=pk2",
         },
         {
             "name": "pk3",
-            "toggle_url": "http://localhost/fixtures/compound_three_primary_keys.json?_dummy_facet=1&_facet=pk3",
+            "toggle_url": "http://localhost/fixtures/compound_three_primary_keys.json?_dummy_facet=1&_extra=suggested_facets&_facet=pk3",
         },
-    ] == response.json()["suggested_facets"]
+    ]
 
 
 @pytest.mark.asyncio
@@ -718,7 +709,7 @@ async def test_hook_register_routes(ds_client, path, body):
 @pytest.mark.parametrize("configured_path", ("path1", "path2"))
 def test_hook_register_routes_with_datasette(configured_path):
     with make_app_client(
-        metadata={
+        config={
             "plugins": {
                 "register-route-demo": {
                     "path": configured_path,
@@ -737,7 +728,7 @@ def test_hook_register_routes_with_datasette(configured_path):
 def test_hook_register_routes_override():
     "Plugins can over-ride default paths such as /db/table"
     with make_app_client(
-        metadata={
+        config={
             "plugins": {
                 "register-route-demo": {
                     "path": "blah",
@@ -842,7 +833,7 @@ async def test_hook_canned_queries_actor(ds_client):
 def test_hook_register_magic_parameters(restore_working_directory):
     with make_app_client(
         extra_databases={"data.db": "create table logs (line text)"},
-        metadata={
+        config={
             "databases": {
                 "data": {
                     "queries": {
@@ -872,7 +863,7 @@ def test_hook_register_magic_parameters(restore_working_directory):
 def test_hook_forbidden(restore_working_directory):
     with make_app_client(
         extra_databases={"data2.db": "create table logs (line text)"},
-        metadata={"allow": {}},
+        config={"allow": {}},
     ) as client:
         response = client.get("/")
         assert response.status_code == 403
@@ -886,6 +877,14 @@ def test_hook_forbidden(restore_working_directory):
             client.ds._last_forbidden_message
             == "You do not have permission to view this database"
         )
+
+
+def test_plugin_config_in_metadata():
+    with pytest.raises(
+        Exception,
+        match="Datasette no longer accepts plugin configuration in --metadata",
+    ):
+        Datasette(memory=True, metadata={"plugins": {}})
 
 
 @pytest.mark.asyncio
@@ -937,7 +936,7 @@ async def test_hook_table_actions(ds_client, table_or_view):
 
     response_2 = await ds_client.get(f"/fixtures/{table_or_view}?_bot=1&_hello=BOB")
     assert sorted(
-        get_table_actions_links(response_2.text), key=lambda l: l["label"]
+        get_table_actions_links(response_2.text), key=lambda link: link["label"]
     ) == [
         {"label": "Database: fixtures", "href": "/"},
         {"label": "From async BOB", "href": "/"},
@@ -1095,7 +1094,7 @@ async def test_hook_filters_from_request(ds_client):
 @pytest.mark.parametrize("extra_metadata", (False, True))
 async def test_hook_register_permissions(extra_metadata):
     ds = Datasette(
-        metadata={
+        config={
             "plugins": {
                 "datasette-register-permissions": {
                     "permissions": [
@@ -1147,7 +1146,7 @@ async def test_hook_register_permissions_no_duplicates(duplicate):
     if duplicate == "abbr":
         abbr2 = "abbr1"
     ds = Datasette(
-        metadata={
+        config={
             "plugins": {
                 "datasette-register-permissions": {
                     "permissions": [
@@ -1182,7 +1181,7 @@ async def test_hook_register_permissions_no_duplicates(duplicate):
 @pytest.mark.asyncio
 async def test_hook_register_permissions_allows_identical_duplicates():
     ds = Datasette(
-        metadata={
+        config={
             "plugins": {
                 "datasette-register-permissions": {
                     "permissions": [
@@ -1211,3 +1210,87 @@ async def test_hook_register_permissions_allows_identical_duplicates():
     await ds.invoke_startup()
     # Check that ds.permissions has only one of each
     assert len([p for p in ds.permissions.values() if p.abbr == "abbr1"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_hook_actors_from_ids():
+    # Without the hook should return default {"id": id} list
+    ds = Datasette()
+    await ds.invoke_startup()
+    db = ds.add_memory_database("actors_from_ids")
+    await db.execute_write(
+        "create table actors (id text primary key, name text, age int)"
+    )
+    await db.execute_write(
+        "insert into actors (id, name, age) values ('3', 'Cate Blanchett', 52)"
+    )
+    await db.execute_write(
+        "insert into actors (id, name, age) values ('5', 'Rooney Mara', 36)"
+    )
+    await db.execute_write(
+        "insert into actors (id, name, age) values ('7', 'Sarah Paulson', 46)"
+    )
+    await db.execute_write(
+        "insert into actors (id, name, age) values ('9', 'Helena Bonham Carter', 55)"
+    )
+    table_names = await db.table_names()
+    assert table_names == ["actors"]
+    actors1 = await ds.actors_from_ids(["3", "5", "7"])
+    assert actors1 == {
+        "3": {"id": "3"},
+        "5": {"id": "5"},
+        "7": {"id": "7"},
+    }
+
+    class ActorsFromIdsPlugin:
+        __name__ = "ActorsFromIdsPlugin"
+
+        @hookimpl
+        def actors_from_ids(self, datasette, actor_ids):
+            db = datasette.get_database("actors_from_ids")
+
+            async def inner():
+                sql = "select id, name from actors where id in ({})".format(
+                    ", ".join("?" for _ in actor_ids)
+                )
+                actors = {}
+                result = await db.execute(sql, actor_ids)
+                for row in result.rows:
+                    actor = dict(row)
+                    actors[actor["id"]] = actor
+                return actors
+
+            return inner
+
+    try:
+        pm.register(ActorsFromIdsPlugin(), name="ActorsFromIdsPlugin")
+        actors2 = await ds.actors_from_ids(["3", "5", "7"])
+        assert actors2 == {
+            "3": {"id": "3", "name": "Cate Blanchett"},
+            "5": {"id": "5", "name": "Rooney Mara"},
+            "7": {"id": "7", "name": "Sarah Paulson"},
+        }
+    finally:
+        pm.unregister(name="ReturnNothingPlugin")
+
+
+@pytest.mark.asyncio
+async def test_plugin_is_installed():
+    datasette = Datasette(memory=True)
+
+    class DummyPlugin:
+        __name__ = "DummyPlugin"
+
+        @hookimpl
+        def actors_from_ids(self, datasette, actor_ids):
+            return {}
+
+    try:
+        pm.register(DummyPlugin(), name="DummyPlugin")
+        response = await datasette.client.get("/-/plugins.json")
+        assert response.status_code == 200
+        installed_plugins = {p["name"] for p in response.json()}
+        assert "DummyPlugin" in installed_plugins
+
+    finally:
+        pm.unregister(name="DummyPlugin")

@@ -51,7 +51,16 @@ This command can also be used to upgrade Datasette itself to the latest released
 
     datasette install -U datasette
 
-These commands are thin wrappers around ``pip install`` and ``pip uninstall``, which ensure they run ``pip`` in the same virtual environment as Datasette itself.
+You can install multiple plugins at once by listing them as lines in a ``requirements.txt`` file like this::
+
+    datasette-vega
+    datasette-cluster-map
+
+Then pass that file to ``datasette install -r``::
+
+    datasette install -r requirements.txt
+
+The ``install`` and ``uninstall`` commands are thin wrappers around ``pip install`` and ``pip uninstall``, which ensure that they run ``pip`` in the same virtual environment as Datasette itself.
 
 One-off plugins using --plugins-dir
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -72,6 +81,60 @@ You can use the name of a package on PyPI or any of the other valid arguments to
     datasette publish cloudrun mydb.db \
         --install=https://url-to-my-package.zip
 
+
+.. _plugins_datasette_load_plugins:
+
+Controlling which plugins are loaded
+------------------------------------
+
+Datasette defaults to loading every plugin that is installed in the same virtual environment as Datasette itself.
+
+You can set the ``DATASETTE_LOAD_PLUGINS`` environment variable to a comma-separated list of plugin names to load a controlled subset of plugins instead.
+
+For example, to load just the ``datasette-vega`` and ``datasette-cluster-map`` plugins, set ``DATASETTE_LOAD_PLUGINS`` to ``datasette-vega,datasette-cluster-map``:
+
+.. code-block:: bash
+
+    export DATASETTE_LOAD_PLUGINS='datasette-vega,datasette-cluster-map'
+    datasette mydb.db
+
+Or:
+
+.. code-block:: bash
+
+    DATASETTE_LOAD_PLUGINS='datasette-vega,datasette-cluster-map' \
+      datasette mydb.db
+
+To disable the loading of all additional plugins, set ``DATASETTE_LOAD_PLUGINS`` to an empty string:
+
+.. code-block:: bash
+
+    export DATASETTE_LOAD_PLUGINS=''
+    datasette mydb.db
+
+A quick way to test this setting is to use it with the ``datasette plugins`` command:
+
+.. code-block:: bash
+
+    DATASETTE_LOAD_PLUGINS='datasette-vega' datasette plugins
+
+This should output the following:
+
+.. code-block:: json
+
+    [
+        {
+            "name": "datasette-vega",
+            "static": true,
+            "templates": false,
+            "version": "0.6.2",
+            "hooks": [
+                "extra_css_urls",
+                "extra_js_urls"
+            ]
+        }
+    ]
+
 .. _plugins_installed:
 
 Seeing what plugins are installed
@@ -81,7 +144,12 @@ You can see a list of installed plugins by navigating to the ``/-/plugins`` page
 
 You can also use the ``datasette plugins`` command::
 
-    $ datasette plugins
+    datasette plugins
+
+Which outputs:
+
+.. code-block:: json
+
     [
         {
             "name": "datasette_json_html",
@@ -98,7 +166,8 @@ You can also use the ``datasette plugins`` command::
     cog.out("\n")
     result = CliRunner().invoke(cli.cli, ["plugins", "--all"])
     # cog.out() with text containing newlines was unindenting for some reason
-    cog.outl("If you run ``datasette plugins --all`` it will include default plugins that ship as part of Datasette::\n")
+    cog.outl("If you run ``datasette plugins --all`` it will include default plugins that ship as part of Datasette:\n")
+    cog.outl(".. code-block:: json\n")
     plugins = [p for p in json.loads(result.output) if p["name"].startswith("datasette.")]
     indented = textwrap.indent(json.dumps(plugins, indent=4), "    ")
     for line in indented.split("\n"):
@@ -106,7 +175,9 @@ You can also use the ``datasette plugins`` command::
     cog.out("\n\n")
 .. ]]]
 
-If you run ``datasette plugins --all`` it will include default plugins that ship as part of Datasette::
+If you run ``datasette plugins --all`` it will include default plugins that ship as part of Datasette:
+
+.. code-block:: json
 
     [
         {
@@ -227,18 +298,34 @@ If you run ``datasette plugins --all`` it will include default plugins that ship
 
 You can add the ``--plugins-dir=`` option to include any plugins found in that directory.
 
+Add ``--requirements`` to output a list of installed plugins that can then be installed in another Datasette instance using ``datasette install -r requirements.txt``::
+
+    datasette plugins --requirements
+
+The output will look something like this::
+
+    datasette-codespaces==0.1.1
+    datasette-graphql==2.2
+    datasette-json-html==1.0.1
+    datasette-pretty-json==0.2.2
+    datasette-x-forwarded-host==0.1
+
+To write that to a ``requirements.txt`` file, run this::
+
+    datasette plugins --requirements > requirements.txt
+
 .. _plugins_configuration:
 
 Plugin configuration
 --------------------
 
-Plugins can have their own configuration, embedded in a :ref:`metadata` file. Configuration options for plugins live within a ``"plugins"`` key in that file, which can be included at the root, database or table level.
+Plugins can have their own configuration, embedded in a :ref:`configuration` file. Configuration options for plugins live within a ``"plugins"`` key in that file, which can be included at the root, database or table level.
 
 Here is an example of some plugin configuration for a specific table:
 
-.. code-block:: json
-
-    {
+.. [[[cog
+    from metadata_doc import config_example
+    config_example(cog, {
         "databases": {
             "sf-trees": {
                 "tables": {
@@ -253,7 +340,44 @@ Here is an example of some plugin configuration for a specific table:
                 }
             }
         }
-    }
+    })
+.. ]]]
+
+.. tab:: datasette.yaml
+
+    .. code-block:: yaml
+
+        databases:
+          sf-trees:
+            tables:
+              Street_Tree_List:
+                plugins:
+                  datasette-cluster-map:
+                    latitude_column: lat
+                    longitude_column: lng
+
+
+.. tab:: datasette.json
+
+    .. code-block:: json
+
+        {
+          "databases": {
+            "sf-trees": {
+              "tables": {
+                "Street_Tree_List": {
+                  "plugins": {
+                    "datasette-cluster-map": {
+                      "latitude_column": "lat",
+                      "longitude_column": "lng"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+.. [[[end]]]
 
 This tells the ``datasette-cluster-map`` column which latitude and longitude columns should be used for a table called ``Street_Tree_List`` inside a database file called ``sf-trees.db``.
 
@@ -262,13 +386,12 @@ This tells the ``datasette-cluster-map`` column which latitude and longitude col
 Secret configuration values
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Any values embedded in ``metadata.json`` will be visible to anyone who views the ``/-/metadata`` page of your Datasette instance. Some plugins may need configuration that should stay secret - API keys for example. There are two ways in which you can store secret configuration values.
+Some plugins may need configuration that should stay secret - API keys for example. There are two ways in which you can store secret configuration values.
 
 **As environment variables**. If your secret lives in an environment variable that is available to the Datasette process, you can indicate that the configuration value should be read from that environment variable like so:
 
-.. code-block:: json
-
-    {
+.. [[[cog
+    config_example(cog, {
         "plugins": {
             "datasette-auth-github": {
                 "client_secret": {
@@ -276,13 +399,38 @@ Any values embedded in ``metadata.json`` will be visible to anyone who views the
                 }
             }
         }
-    }
+    })
+.. ]]]
+
+.. tab:: datasette.yaml
+
+    .. code-block:: yaml
+
+        plugins:
+          datasette-auth-github:
+            client_secret:
+              $env: GITHUB_CLIENT_SECRET
+
+
+.. tab:: datasette.json
+
+    .. code-block:: json
+
+        {
+          "plugins": {
+            "datasette-auth-github": {
+              "client_secret": {
+                "$env": "GITHUB_CLIENT_SECRET"
+              }
+            }
+          }
+        }
+.. [[[end]]]
 
 **As values in separate files**. Your secrets can also live in files on disk. To specify a secret should be read from a file, provide the full file path like this:
 
-.. code-block:: json
-
-    {
+.. [[[cog
+    config_example(cog, {
         "plugins": {
             "datasette-auth-github": {
                 "client_secret": {
@@ -290,21 +438,46 @@ Any values embedded in ``metadata.json`` will be visible to anyone who views the
                 }
             }
         }
-    }
+    })
+.. ]]]
+
+.. tab:: datasette.yaml
+
+    .. code-block:: yaml
+
+        plugins:
+          datasette-auth-github:
+            client_secret:
+              $file: /secrets/client-secret
+
+
+.. tab:: datasette.json
+
+    .. code-block:: json
+
+        {
+          "plugins": {
+            "datasette-auth-github": {
+              "client_secret": {
+                "$file": "/secrets/client-secret"
+              }
+            }
+          }
+        }
+.. [[[end]]]
 
 If you are publishing your data using the :ref:`datasette publish <cli_publish>` family of commands, you can use the ``--plugin-secret`` option to set these secrets at publish time. For example, using Heroku you might run the following command::
 
-    $ datasette publish heroku my_database.db \
+    datasette publish heroku my_database.db \
         --name my-heroku-app-demo \
         --install=datasette-auth-github \
         --plugin-secret datasette-auth-github client_id your_client_id \
         --plugin-secret datasette-auth-github client_secret your_client_secret
 
-This will set the necessary environment variables and add the following to the deployed ``metadata.json``:
+This will set the necessary environment variables and add the following to the deployed ``metadata.yaml``:
 
-.. code-block:: json
-
-    {
+.. [[[cog
+    config_example(cog, {
         "plugins": {
             "datasette-auth-github": {
                 "client_id": {
@@ -315,4 +488,35 @@ This will set the necessary environment variables and add the following to the d
                 }
             }
         }
-    }
+    })
+.. ]]]
+
+.. tab:: datasette.yaml
+
+    .. code-block:: yaml
+
+        plugins:
+          datasette-auth-github:
+            client_id:
+              $env: DATASETTE_AUTH_GITHUB_CLIENT_ID
+            client_secret:
+              $env: DATASETTE_AUTH_GITHUB_CLIENT_SECRET
+
+
+.. tab:: datasette.json
+
+    .. code-block:: json
+
+        {
+          "plugins": {
+            "datasette-auth-github": {
+              "client_id": {
+                "$env": "DATASETTE_AUTH_GITHUB_CLIENT_ID"
+              },
+              "client_secret": {
+                "$env": "DATASETTE_AUTH_GITHUB_CLIENT_SECRET"
+              }
+            }
+          }
+        }
+.. [[[end]]]

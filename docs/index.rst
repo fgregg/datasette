@@ -17,7 +17,7 @@ datasette| |discord|
 .. |docker: datasette| image:: https://img.shields.io/badge/docker-datasette-blue
    :target: https://hub.docker.com/r/datasetteproject/datasette
 .. |discord| image:: https://img.shields.io/discord/823971286308356157?label=discord
-   :target: https://discord.gg/ktd74dm5mw
+   :target: https://datasette.io/discord
 
 *An open source multi-tool for exploring and publishing data*
 
@@ -29,7 +29,7 @@ Datasette is aimed at data journalists, museum curators, archivists, local gover
 
 Interested in learning Datasette? Start with `the official tutorials <https://datasette.io/tutorials>`__.
 
-Support questions, feedback? Join our `GitHub Discussions forum <https://github.com/simonw/datasette/discussions>`__.
+Support questions, feedback? Join the `Datasette Discord <https://datasette.io/discord>`__.
 
 Contents
 --------
@@ -39,6 +39,7 @@ Contents
 
    getting_started
    installation
+   configuration
    ecosystem
    cli-reference
    pages

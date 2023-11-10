@@ -4,7 +4,7 @@
  Authentication and permissions
 ================================
 
-Datasette does not require authentication by default. Any visitor to a Datasette instance can explore the full data and execute read-only SQL queries.
+Datasette doesn't require authentication by default. Any visitor to a Datasette instance can explore the full data and execute read-only SQL queries.
 
 Datasette's plugin system can be used to add many different styles of authentication, such as user accounts, single sign-on or API keys.
 
@@ -32,7 +32,10 @@ The one exception is the "root" account, which you can sign into while using Dat
 
 To sign in as root, start Datasette using the ``--root`` command-line option, like this::
 
-    $ datasette --root
+    datasette --root
+
+::
+
     http://127.0.0.1:8001/-/auth-token?token=786fc524e0199d70dc9a581d851f466244e114ca92f33aa3b42a139e9388daa7
     INFO:     Started server process [25801]
     INFO:     Waiting for application startup.
@@ -64,7 +67,7 @@ An **action** is a string describing the action the actor would like to perform.
 
 A **resource** is the item the actor wishes to interact with - for example a specific database or table. Some actions, such as ``permissions-debug``, are not associated with a particular resource.
 
-Datasette's built-in view permissions (``view-database``, ``view-table`` etc) default to *allow* - unless you :ref:`configure additional permission rules <authentication_permissions_metadata>` unauthenticated users will be allowed to access content.
+Datasette's built-in view permissions (``view-database``, ``view-table`` etc) default to *allow* - unless you :ref:`configure additional permission rules <authentication_permissions_config>` unauthenticated users will be allowed to access content.
 
 Permissions with potentially harmful effects should default to *deny*. Plugin authors should account for this when designing new plugins - for example, the `datasette-upload-csvs <https://github.com/simonw/datasette-upload-csvs>`__ plugin defaults to deny so that installations don't accidentally allow unauthenticated users to create new tables by uploading a CSV file.
 
@@ -73,7 +76,7 @@ Permissions with potentially harmful effects should default to *deny*. Plugin au
 Defining permissions with "allow" blocks
 ----------------------------------------
 
-The standard way to define permissions in Datasette is to use an ``"allow"`` block. This is a JSON document describing which actors are allowed to perform a permission.
+The standard way to define permissions in Datasette is to use an ``"allow"`` block :ref:`in the datasette.yaml file <authentication_permissions_config>`. This is a JSON document describing which actors are allowed to perform a permission.
 
 The most basic form of allow block is this (`allow demo <https://latest.datasette.io/-/allow-debug?actor=%7B%22id%22%3A+%22root%22%7D&allow=%7B%0D%0A++++++++%22id%22%3A+%22root%22%0D%0A++++%7D>`__, `deny demo <https://latest.datasette.io/-/allow-debug?actor=%7B%22id%22%3A+%22trevor%22%7D&allow=%7B%0D%0A++++++++%22id%22%3A+%22root%22%0D%0A++++%7D>`__):
 
@@ -183,18 +186,18 @@ The /-/allow-debug tool
 
 The ``/-/allow-debug`` tool lets you try out different  ``"action"`` blocks against different ``"actor"`` JSON objects. You can try that out here: https://latest.datasette.io/-/allow-debug
 
-.. _authentication_permissions_metadata:
+.. _authentication_permissions_config:
 
-Access permissions in metadata
-==============================
+Access permissions in ``datasette.yaml``
+========================================
 
-There are two ways to configure permissions using ``metadata.json`` (or ``metadata.yaml``).
+There are two ways to configure permissions using ``datasette.yaml`` (or ``datasette.json``).
 
 For simple visibility permissions you can use ``"allow"`` blocks in the root, database, table and query sections.
 
 For other permissions you can use a ``"permissions"`` block, described :ref:`in the next section <authentication_permissions_other>`.
 
-You can limit who is allowed to view different parts of your Datasette instance using ``"allow"`` keys in your :ref:`metadata` configuration.
+You can limit who is allowed to view different parts of your Datasette instance using ``"allow"`` keys in your :ref:`configuration`.
 
 You can control the following:
 
@@ -212,23 +215,64 @@ Access to an instance
 
 Here's how to restrict access to your entire Datasette instance to just the ``"id": "root"`` user:
 
-.. code-block:: json
+.. [[[cog
+    from metadata_doc import config_example
+    config_example(cog, """
+        title: My private Datasette instance
+        allow:
+          id: root
+      """)
+.. ]]]
 
-    {
-        "title": "My private Datasette instance",
-        "allow": {
+.. tab:: datasette.yaml
+
+    .. code-block:: yaml
+
+
+            title: My private Datasette instance
+            allow:
+              id: root
+  
+
+.. tab:: datasette.json
+
+    .. code-block:: json
+
+        {
+          "title": "My private Datasette instance",
+          "allow": {
             "id": "root"
+          }
         }
-    }
+.. [[[end]]]
 
 To deny access to all users, you can use ``"allow": false``:
 
-.. code-block:: json
+.. [[[cog
+    config_example(cog, """
+        title: My entirely inaccessible instance
+        allow: false
+    """)
+.. ]]]
 
-    {
-        "title": "My entirely inaccessible instance",
-        "allow": false
-    }
+.. tab:: datasette.yaml
+
+    .. code-block:: yaml
+
+
+            title: My entirely inaccessible instance
+            allow: false
+
+
+.. tab:: datasette.json
+
+    .. code-block:: json
+
+        {
+          "title": "My entirely inaccessible instance",
+          "allow": false
+        }
+.. [[[end]]]
 
 One reason to do this is if you are using a Datasette plugin - such as `datasette-permissions-sql <https://github.com/simonw/datasette-permissions-sql>`__ - to control permissions instead.
 
@@ -239,17 +283,40 @@ Access to specific databases
 
 To limit access to a specific ``private.db`` database to just authenticated users, use the ``"allow"`` block like this:
 
-.. code-block:: json
+.. [[[cog
+    config_example(cog, """
+        databases:
+          private:
+            allow:
+              id: "*"
+    """)
+.. ]]]
 
-    {
-        "databases": {
+.. tab:: datasette.yaml
+
+    .. code-block:: yaml
+
+
+            databases:
+              private:
+                allow:
+                  id: "*"
+
+
+.. tab:: datasette.json
+
+    .. code-block:: json
+
+        {
+          "databases": {
             "private": {
-                "allow": {
-                    "id": "*"
-                }
+              "allow": {
+                "id": "*"
+              }
             }
+          }
         }
-    }
+.. [[[end]]]
 
 .. _authentication_permissions_table:
 
@@ -258,21 +325,48 @@ Access to specific tables and views
 
 To limit access to the ``users`` table in your ``bakery.db`` database:
 
-.. code-block:: json
+.. [[[cog
+    config_example(cog, """
+        databases:
+          bakery:
+            tables:
+              users:
+                allow:
+                  id: '*'
+    """)
+.. ]]]
 
-    {
-        "databases": {
+.. tab:: datasette.yaml
+
+    .. code-block:: yaml
+
+
+            databases:
+              bakery:
+                tables:
+                  users:
+                    allow:
+                      id: '*'
+
+
+.. tab:: datasette.json
+
+    .. code-block:: json
+
+        {
+          "databases": {
             "bakery": {
-                "tables": {
-                    "users": {
-                        "allow": {
-                            "id": "*"
-                        }
-                    }
+              "tables": {
+                "users": {
+                  "allow": {
+                    "id": "*"
+                  }
                 }
+              }
             }
+          }
         }
-    }
+.. [[[end]]]
 
 This works for SQL views as well - you can list their names in the ``"tables"`` block above in the same way as regular tables.
 
@@ -286,27 +380,62 @@ This works for SQL views as well - you can list their names in the ``"tables"`` 
 Access to specific canned queries
 ---------------------------------
 
-:ref:`canned_queries` allow you to configure named SQL queries in your ``metadata.json`` that can be executed by users. These queries can be set up to both read and write to the database, so controlling who can execute them can be important.
+:ref:`canned_queries` allow you to configure named SQL queries in your ``datasette.yaml`` that can be executed by users. These queries can be set up to both read and write to the database, so controlling who can execute them can be important.
 
 To limit access to the ``add_name`` canned query in your ``dogs.db`` database to just the :ref:`root user<authentication_root>`:
 
-.. code-block:: json
+.. [[[cog
+    config_example(cog, """
+        databases:
+          dogs:
+            queries:
+              add_name:
+                sql: INSERT INTO names (name) VALUES (:name)
+                write: true
+                allow:
+                  id:
+                  - root
+    """)
+.. ]]]
 
-    {
-        "databases": {
+.. tab:: datasette.yaml
+
+    .. code-block:: yaml
+
+
+            databases:
+              dogs:
+                queries:
+                  add_name:
+                    sql: INSERT INTO names (name) VALUES (:name)
+                    write: true
+                    allow:
+                      id:
+                      - root
+
+
+.. tab:: datasette.json
+
+    .. code-block:: json
+
+        {
+          "databases": {
             "dogs": {
-                "queries": {
-                    "add_name": {
-                        "sql": "INSERT INTO names (name) VALUES (:name)",
-                        "write": true,
-                        "allow": {
-                            "id": ["root"]
-                        }
-                    }
+              "queries": {
+                "add_name": {
+                  "sql": "INSERT INTO names (name) VALUES (:name)",
+                  "write": true,
+                  "allow": {
+                    "id": [
+                      "root"
+                    ]
+                  }
                 }
+              }
             }
+          }
         }
-    }
+.. [[[end]]]
 
 .. _authentication_permissions_execute_sql:
 
@@ -323,90 +452,224 @@ You can alternatively use an ``"allow_sql"`` block to control who is allowed to 
 
 To prevent any user from executing arbitrary SQL queries, use this:
 
-.. code-block:: json
+.. [[[cog
+    config_example(cog, """
+        allow_sql: false
+    """)
+.. ]]]
 
-    {
-        "allow_sql": false
-    }
+.. tab:: datasette.yaml
+
+    .. code-block:: yaml
+
+
+            allow_sql: false
+
+
+.. tab:: datasette.json
+
+    .. code-block:: json
+
+        {
+          "allow_sql": false
+        }
+.. [[[end]]]
 
 To enable just the :ref:`root user<authentication_root>` to execute SQL for all databases in your instance, use the following:
 
-.. code-block:: json
+.. [[[cog
+    config_example(cog, """
+        allow_sql:
+          id: root
+    """)
+.. ]]]
 
-    {
-        "allow_sql": {
+.. tab:: datasette.yaml
+
+    .. code-block:: yaml
+
+
+            allow_sql:
+              id: root
+
+
+.. tab:: datasette.json
+
+    .. code-block:: json
+
+        {
+          "allow_sql": {
             "id": "root"
+          }
         }
-    }
+.. [[[end]]]
 
 To limit this ability for just one specific database, use this:
 
-.. code-block:: json
+.. [[[cog
+    config_example(cog, """
+        databases:
+          mydatabase:
+            allow_sql:
+              id: root
+    """)
+.. ]]]
 
-    {
-        "databases": {
+.. tab:: datasette.yaml
+
+    .. code-block:: yaml
+
+
+            databases:
+              mydatabase:
+                allow_sql:
+                  id: root
+
+
+.. tab:: datasette.json
+
+    .. code-block:: json
+
+        {
+          "databases": {
             "mydatabase": {
-                "allow_sql": {
-                    "id": "root"
-                }
+              "allow_sql": {
+                "id": "root"
+              }
             }
+          }
         }
-    }
+.. [[[end]]]
 
 .. _authentication_permissions_other:
 
-Other permissions in metadata
-=============================
+Other permissions in ``datasette.yaml``
+=======================================
 
-For all other permissions, you can use one or more ``"permissions"`` blocks in your metadata.
+For all other permissions, you can use one or more ``"permissions"`` blocks in your ``datasette.yaml`` configuration file.
 
-To grant access to the :ref:`permissions debug tool <PermissionsDebugView>` to all signed in users you can grant ``permissions-debug`` to any actor with an ``id`` matching the wildcard ``*`` by adding this a the root of your metadata:
+To grant access to the :ref:`permissions debug tool <PermissionsDebugView>` to all signed in users, you can grant ``permissions-debug`` to any actor with an ``id`` matching the wildcard ``*`` by adding this a the root of your configuration:
 
-.. code-block:: json
+.. [[[cog
+    config_example(cog, """
+        permissions:
+          debug-menu:
+            id: '*'
+    """)
+.. ]]]
 
-    {
-        "permissions": {
+.. tab:: datasette.yaml
+
+    .. code-block:: yaml
+
+
+            permissions:
+              debug-menu:
+                id: '*'
+
+
+.. tab:: datasette.json
+
+    .. code-block:: json
+
+        {
+          "permissions": {
             "debug-menu": {
-                "id": "*"
+              "id": "*"
             }
+          }
         }
-    }
+.. [[[end]]]
 
 To grant ``create-table`` to the user with ``id`` of ``editor`` for the ``docs`` database:
 
-.. code-block:: json
+.. [[[cog
+    config_example(cog, """
+        databases:
+          docs:
+            permissions:
+              create-table:
+                id: editor
+    """)
+.. ]]]
 
-    {
-        "databases": {
+.. tab:: datasette.yaml
+
+    .. code-block:: yaml
+
+
+            databases:
+              docs:
+                permissions:
+                  create-table:
+                    id: editor
+
+
+.. tab:: datasette.json
+
+    .. code-block:: json
+
+        {
+          "databases": {
             "docs": {
-                "permissions": {
-                    "create-table": {
-                        "id": "editor"
-                    }
+              "permissions": {
+                "create-table": {
+                  "id": "editor"
                 }
+              }
             }
+          }
         }
-    }
+.. [[[end]]]
 
 And for ``insert-row`` against the ``reports`` table in that ``docs`` database:
 
-.. code-block:: json
+.. [[[cog
+    config_example(cog, """
+        databases:
+          docs:
+            tables:
+              reports:
+                permissions:
+                  insert-row:
+                    id: editor
+    """)
+.. ]]]
 
-    {
-        "databases": {
+.. tab:: datasette.yaml
+
+    .. code-block:: yaml
+
+
+            databases:
+              docs:
+                tables:
+                  reports:
+                    permissions:
+                      insert-row:
+                        id: editor
+
+
+.. tab:: datasette.json
+
+    .. code-block:: json
+
+        {
+          "databases": {
             "docs": {
-                "tables": {
-                    "reports": {
-                        "permissions": {
-                            "insert-row": {
-                                "id": "editor"
-                            }
-                        }
+              "tables": {
+                "reports": {
+                  "permissions": {
+                    "insert-row": {
+                      "id": "editor"
                     }
+                  }
                 }
+              }
             }
+          }
         }
-    }
+.. [[[end]]]
 
 The :ref:`permissions debug tool <PermissionsDebugView>` can be useful for helping test permissions that you have configured in this way.
 
