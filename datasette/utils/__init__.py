@@ -1,7 +1,9 @@
 import asyncio
 from contextlib import contextmanager
+import aiofiles
 import click
 from collections import OrderedDict, namedtuple, Counter
+import copy
 import base64
 import hashlib
 import inspect
@@ -17,11 +19,14 @@ import time
 import types
 import secrets
 import shutil
+from typing import Iterable, List, Tuple
 import urllib
 import yaml
 from .shutil_backport import copytree
 from .sqlite import sqlite3, supports_table_xinfo
 
+if typing.TYPE_CHECKING:
+    from datasette.database import Database
 
 # From https://www.sqlite.org/lang_keywords.html
 reserved_words = set(
@@ -242,6 +247,7 @@ allowed_pragmas = (
     "schema_version",
     "table_info",
     "table_xinfo",
+    "table_list",
 )
 disallawed_sql_res = [
     (
@@ -404,9 +410,9 @@ def make_dockerfile(
     apt_get_extras = apt_get_extras_
     if spatialite:
         apt_get_extras.extend(["python3-dev", "gcc", "libsqlite3-mod-spatialite"])
-        environment_variables[
-            "SQLITE_EXTENSIONS"
-        ] = "/usr/lib/x86_64-linux-gnu/mod_spatialite.so"
+        environment_variables["SQLITE_EXTENSIONS"] = (
+            "/usr/lib/x86_64-linux-gnu/mod_spatialite.so"
+        )
     return """
 FROM python:3.11.0-slim-bullseye
 COPY . /app
@@ -418,9 +424,11 @@ RUN datasette inspect {files} --inspect-file inspect-data.json
 ENV PORT {port}
 EXPOSE {port}
 CMD {cmd}""".format(
-        apt_get_extras=APT_GET_DOCKERFILE_EXTRAS.format(" ".join(apt_get_extras))
-        if apt_get_extras
-        else "",
+        apt_get_extras=(
+            APT_GET_DOCKERFILE_EXTRAS.format(" ".join(apt_get_extras))
+            if apt_get_extras
+            else ""
+        ),
         environment_variables="\n".join(
             [
                 "ENV {} '{}'".format(key, value)
@@ -711,7 +719,7 @@ def to_css_class(s):
     """
     if css_class_re.match(s):
         return s
-    md5_suffix = hashlib.md5(s.encode("utf8")).hexdigest()[:6]
+    md5_suffix = md5_not_usedforsecurity(s)[:6]
     # Strip leading _, -
     s = s.lstrip("_").lstrip("-")
     # Replace any whitespace with hyphens
@@ -1128,7 +1136,13 @@ class StartupError(Exception):
 _re_named_parameter = re.compile(":([a-zA-Z0-9_]+)")
 
 
-async def derive_named_parameters(db, sql):
+@documented
+async def derive_named_parameters(db: "Database", sql: str) -> List[str]:
+    """
+    Given a SQL statement, return a list of named parameters that are used in the statement
+
+    e.g. for ``select * from foo where id=:id`` this would return ``["id"]``
+    """
     explain = "explain {}".format(sql.strip().rstrip(";"))
     possible_params = _re_named_parameter.findall(sql)
     try:
@@ -1272,16 +1286,159 @@ def pairs_to_nested_config(pairs: typing.List[typing.Tuple[str, typing.Any]]) ->
     return result
 
 
-def fail_if_plugins_in_metadata(metadata: dict, filename=None):
-    """If plugin config is inside metadata, raise an Exception"""
-    if metadata is not None and metadata.get("plugins") is not None:
-        suggested_extension = (
-            ".yaml"
-            if filename is not None
-            and (filename.endswith(".yaml") or filename.endswith(".yml"))
-            else ".json"
-        )
-        raise Exception(
-            f'Datasette no longer accepts plugin configuration in --metadata. Move your "plugins" configuration blocks to a separate file - we suggest calling that datasette.{suggested_extension} - and start Datasette with datasette -c datasette.{suggested_extension}. See https://docs.datasette.io/en/latest/configuration.html for more details.'
-        )
-    return metadata
+def make_slot_function(name, datasette, request, **kwargs):
+    from datasette.plugins import pm
+
+    method = getattr(pm.hook, name, None)
+    assert method is not None, "No hook found for {}".format(name)
+
+    async def inner():
+        html_bits = []
+        for hook in method(datasette=datasette, request=request, **kwargs):
+            html = await await_me_maybe(hook)
+            if html is not None:
+                html_bits.append(html)
+        return markupsafe.Markup("".join(html_bits))
+
+    return inner
+
+
+def prune_empty_dicts(d: dict):
+    """
+    Recursively prune all empty dictionaries from a given dictionary.
+    """
+    for key, value in list(d.items()):
+        if isinstance(value, dict):
+            prune_empty_dicts(value)
+            if value == {}:
+                d.pop(key, None)
+
+
+def move_plugins_and_allow(source: dict, destination: dict) -> Tuple[dict, dict]:
+    """
+    Move 'plugins' and 'allow' keys from source to destination dictionary. Creates
+    hierarchy in destination if needed. After moving, recursively remove any keys
+    in the source that are left empty.
+    """
+    source = copy.deepcopy(source)
+    destination = copy.deepcopy(destination)
+
+    def recursive_move(src, dest, path=None):
+        if path is None:
+            path = []
+        for key, value in list(src.items()):
+            new_path = path + [key]
+            if key in ("plugins", "allow"):
+                # Navigate and create the hierarchy in destination if needed
+                d = dest
+                for step in path:
+                    d = d.setdefault(step, {})
+                # Move the plugins
+                d[key] = value
+                # Remove the plugins from source
+                src.pop(key, None)
+            elif isinstance(value, dict):
+                recursive_move(value, dest, new_path)
+                # After moving, check if the current dictionary is empty and remove it if so
+                if not value:
+                    src.pop(key, None)
+
+    recursive_move(source, destination)
+    prune_empty_dicts(source)
+    return source, destination
+
+
+_table_config_keys = (
+    "hidden",
+    "sort",
+    "sort_desc",
+    "size",
+    "sortable_columns",
+    "label_column",
+    "facets",
+    "fts_table",
+    "fts_pk",
+    "searchmode",
+    "units",
+)
+
+
+def move_table_config(metadata: dict, config: dict):
+    """
+    Move all known table configuration keys from metadata to config.
+    """
+    if "databases" not in metadata:
+        return metadata, config
+    metadata = copy.deepcopy(metadata)
+    config = copy.deepcopy(config)
+    for database_name, database in metadata["databases"].items():
+        if "tables" not in database:
+            continue
+        for table_name, table in database["tables"].items():
+            for key in _table_config_keys:
+                if key in table:
+                    config.setdefault("databases", {}).setdefault(
+                        database_name, {}
+                    ).setdefault("tables", {}).setdefault(table_name, {})[
+                        key
+                    ] = table.pop(
+                        key
+                    )
+    prune_empty_dicts(metadata)
+    return metadata, config
+
+
+def redact_keys(original: dict, key_patterns: Iterable) -> dict:
+    """
+    Recursively redact sensitive keys in a dictionary based on given patterns
+
+    :param original: The original dictionary
+    :param key_patterns: A list of substring patterns to redact
+    :return: A copy of the original dictionary with sensitive values redacted
+    """
+
+    def redact(data):
+        if isinstance(data, dict):
+            return {
+                k: (
+                    redact(v)
+                    if not any(pattern in k for pattern in key_patterns)
+                    else "***"
+                )
+                for k, v in data.items()
+            }
+        elif isinstance(data, list):
+            return [redact(item) for item in data]
+        else:
+            return data
+
+    return redact(original)
+
+
+def md5_not_usedforsecurity(s):
+    try:
+        return hashlib.md5(s.encode("utf8"), usedforsecurity=False).hexdigest()
+    except TypeError:
+        # For Python 3.8 which does not support usedforsecurity=False
+        return hashlib.md5(s.encode("utf8")).hexdigest()
+
+
+_etag_cache = {}
+
+
+async def calculate_etag(filepath, chunk_size=4096):
+    if filepath in _etag_cache:
+        return _etag_cache[filepath]
+
+    hasher = hashlib.md5()
+    async with aiofiles.open(filepath, "rb") as f:
+        while True:
+            chunk = await f.read(chunk_size)
+            if not chunk:
+                break
+            hasher.update(chunk)
+
+    etag = f'"{hasher.hexdigest()}"'
+    _etag_cache[filepath] = etag
+
+    return etag

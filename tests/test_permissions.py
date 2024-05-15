@@ -89,10 +89,11 @@ def test_view_padlock(allow, expected_anon, expected_auth, path, padlock_client)
         ({"id": "root"}, 403, 200),
     ],
 )
-def test_view_database(allow, expected_anon, expected_auth):
-    with make_app_client(
-        config={"databases": {"fixtures": {"allow": allow}}}
-    ) as client:
+@pytest.mark.parametrize("use_metadata", (True, False))
+def test_view_database(allow, expected_anon, expected_auth, use_metadata):
+    key = "metadata" if use_metadata else "config"
+    kwargs = {key: {"databases": {"fixtures": {"allow": allow}}}}
+    with make_app_client(**kwargs) as client:
         for path in (
             "/fixtures",
             "/fixtures/compound_three_primary_keys",
@@ -173,16 +174,19 @@ def test_database_list_respects_view_table():
         ({"id": "root"}, 403, 200),
     ],
 )
-def test_view_table(allow, expected_anon, expected_auth):
-    with make_app_client(
-        config={
+@pytest.mark.parametrize("use_metadata", (True, False))
+def test_view_table(allow, expected_anon, expected_auth, use_metadata):
+    key = "metadata" if use_metadata else "config"
+    kwargs = {
+        key: {
             "databases": {
                 "fixtures": {
                     "tables": {"compound_three_primary_keys": {"allow": allow}}
                 }
             }
         }
-    ) as client:
+    }
+    with make_app_client(**kwargs) as client:
         anon_response = client.get("/fixtures/compound_three_primary_keys")
         assert expected_anon == anon_response.status
         if allow and anon_response.status == 200:
@@ -374,6 +378,13 @@ async def test_permissions_debug(ds_client):
     cookie = ds_client.actor_cookie({"id": "root"})
     response = await ds_client.get("/-/permissions", cookies={"ds_actor": cookie})
     assert response.status_code == 200
+    # Should have a select box listing permissions
+    for fragment in (
+        '<select name="permission" id="permission">',
+        '<option value="view-instance">view-instance (default True)</option>',
+        '<option value="insert-row">insert-row (default False)</option>',
+    ):
+        assert fragment in response.text
     # Should show one failure and one success
     soup = Soup(response.text, "html.parser")
     check_divs = soup.findAll("div", {"class": "check"})
@@ -381,9 +392,11 @@ async def test_permissions_debug(ds_client):
         {
             "action": div.select_one(".check-action").text,
             # True = green tick, False = red cross, None = gray None
-            "result": None
-            if div.select(".check-result-no-opinion")
-            else bool(div.select(".check-result-true")),
+            "result": (
+                None
+                if div.select(".check-result-no-opinion")
+                else bool(div.select(".check-result-true"))
+            ),
             "used_default": bool(div.select(".check-used-default")),
         }
         for div in check_divs
@@ -667,6 +680,7 @@ async def test_actor_restricted_permissions(
         "permission": permission,
         "resource": expected_resource,
         "result": expected_result,
+        "default": perms_ds.permissions[permission].default,
     }
     assert response.json() == expected
 

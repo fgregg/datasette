@@ -1,7 +1,12 @@
-import hashlib
 import json
 
-from datasette.utils import add_cors_headers, CustomJSONEncoder
+from datasette.plugins import pm
+from datasette.utils import (
+    add_cors_headers,
+    await_me_maybe,
+    make_slot_function,
+    CustomJSONEncoder,
+)
 from datasette.utils.asgi import Response
 from datasette.version import __version__
 
@@ -132,6 +137,15 @@ class IndexView(BaseView):
                 headers=headers,
             )
         else:
+            homepage_actions = []
+            for hook in pm.hook.homepage_actions(
+                datasette=self.ds,
+                actor=request.actor,
+                request=request,
+            ):
+                extra_links = await await_me_maybe(hook)
+                if extra_links:
+                    homepage_actions.extend(extra_links)
             return await self.render(
                 ["index.html"],
                 request=request,
@@ -142,5 +156,9 @@ class IndexView(BaseView):
                     "private": not await self.ds.permission_allowed(
                         None, "view-instance"
                     ),
+                    "top_homepage": make_slot_function(
+                        "top_homepage", self.ds, request
+                    ),
+                    "homepage_actions": homepage_actions,
                 },
             )

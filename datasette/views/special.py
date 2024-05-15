@@ -1,4 +1,5 @@
 import json
+from datasette.events import LogoutEvent, LoginEvent, CreateTokenEvent
 from datasette.utils.asgi import Response, Forbidden
 from datasette.utils import (
     actor_matches_allow,
@@ -41,7 +42,7 @@ class JsonDataView(BaseView):
             if self.ds.cors:
                 add_cors_headers(headers)
             return Response(
-                json.dumps(data),
+                json.dumps(data, default=repr),
                 content_type="application/json; charset=utf-8",
                 headers=headers,
             )
@@ -52,7 +53,7 @@ class JsonDataView(BaseView):
                 request=request,
                 context={
                     "filename": self.filename,
-                    "data_json": json.dumps(data, indent=4),
+                    "data_json": json.dumps(data, indent=4, default=repr),
                 },
             )
 
@@ -80,9 +81,9 @@ class AuthTokenView(BaseView):
         if secrets.compare_digest(token, self.ds._root_token):
             self.ds._root_token = None
             response = Response.redirect(self.ds.urls.instance())
-            response.set_cookie(
-                "ds_actor", self.ds.sign({"a": {"id": "root"}}, "actor")
-            )
+            root_actor = {"id": "root"}
+            response.set_cookie("ds_actor", self.ds.sign({"a": root_actor}, "actor"))
+            await self.ds.track_event(LoginEvent(actor=root_actor))
             return response
         else:
             raise Forbidden("Invalid token")
@@ -105,6 +106,7 @@ class LogoutView(BaseView):
         response = Response.redirect(self.ds.urls.instance())
         response.set_cookie("ds_actor", "", expires=0, max_age=0)
         self.ds.add_message(request, "You are now logged out", self.ds.WARNING)
+        await self.ds.track_event(LogoutEvent(actor=request.actor))
         return response
 
 
@@ -123,14 +125,14 @@ class PermissionsDebugView(BaseView):
             {
                 "permission_checks": list(reversed(self.ds._permission_checks)),
                 "permissions": [
-                    (
-                        p.name,
-                        p.abbr,
-                        p.description,
-                        p.takes_database,
-                        p.takes_resource,
-                        p.default,
-                    )
+                    {
+                        "name": p.name,
+                        "abbr": p.abbr,
+                        "description": p.description,
+                        "takes_database": p.takes_database,
+                        "takes_resource": p.takes_resource,
+                        "default": p.default,
+                    }
                     for p in self.ds.permissions.values()
                 ],
             },
@@ -162,6 +164,7 @@ class PermissionsDebugView(BaseView):
                 "permission": permission,
                 "resource": resource,
                 "result": result,
+                "default": self.ds.permissions[permission].default,
             }
         )
 
@@ -349,6 +352,15 @@ class CreateTokenView(BaseView):
             restrict_resource=restrict_resource,
         )
         token_bits = self.ds.unsign(token[len("dstok_") :], namespace="token")
+        await self.ds.track_event(
+            CreateTokenEvent(
+                actor=request.actor,
+                expires_after=expires_after,
+                restrict_all=restrict_all,
+                restrict_database=restrict_database,
+                restrict_resource=restrict_resource,
+            )
+        )
         context = await self.shared(request)
         context.update({"errors": errors, "token": token, "token_bits": token_bits})
         return await self.render(["create_token.html"], request, context)

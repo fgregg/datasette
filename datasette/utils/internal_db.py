@@ -76,7 +76,8 @@ async def populate_schema_tables(internal_db, db):
             "DELETE FROM catalog_columns WHERE database_name = ?", [database_name]
         )
         conn.execute(
-            "DELETE FROM catalog_foreign_keys WHERE database_name = ?", [database_name]
+            "DELETE FROM catalog_foreign_keys WHERE database_name = ?",
+            [database_name],
         )
         conn.execute(
             "DELETE FROM catalog_indexes WHERE database_name = ?", [database_name]

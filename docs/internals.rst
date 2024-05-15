@@ -210,8 +210,7 @@ To set cookies on the response, use the ``response.set_cookie(...)`` method. The
         secure=False,
         httponly=False,
         samesite="lax",
-    ):
-        ...
+    ): ...
 
 You can use this with :ref:`datasette.sign() <datasette_sign>` to set signed cookies. Here's how you would set the :ref:`ds_actor cookie <authentication_ds_actor>` for use with Datasette :ref:`authentication <authentication>`:
 
@@ -387,7 +386,7 @@ This is useful when you need to check multiple permissions at once. For example,
 
 .. code-block:: python
 
-    await self.ds.ensure_permissions(
+    await datasette.ensure_permissions(
         request.actor,
         [
             ("view-table", (database, table)),
@@ -421,7 +420,7 @@ This example checks if the user can access a specific table, and sets ``private`
 
 .. code-block:: python
 
-    visible, private = await self.ds.check_visibility(
+    visible, private = await datasette.check_visibility(
         request.actor,
         action="view-table",
         resource=(database, table),
@@ -431,7 +430,7 @@ The following example runs three checks in a row, similar to :ref:`datasette_ens
 
 .. code-block:: python
 
-    visible, private = await self.ds.check_visibility(
+    visible, private = await datasette.check_visibility(
         request.actor,
         permissions=[
             ("view-table", (database, table)),
@@ -593,6 +592,26 @@ Using either of these pattern will result in the in-memory database being served
     The name of the database to be removed.
 
 This removes a database that has been previously added. ``name=`` is the unique name of that database.
+
+.. _datasette_track_event:
+
+await .track_event(event)
+-------------------------
+
+``event`` - ``Event``
+    An instance of a subclass of ``datasette.events.Event``.
+
+Plugins can call this to track events, using classes they have previously registered. See :ref:`plugin_event_tracking` for details.
+
+The event will then be passed to all plugins that have registered to receive events using the :ref:`plugin_hook_track_event` hook.
+
+Example usage, assuming the plugin has previously registered the ``BanUserEvent`` class:
+
+.. code-block:: python
+
+    await datasette.track_event(
+        BanUserEvent(user={"id": 1, "username": "cleverbot"})
+    )
 
 .. _datasette_sign:
 
@@ -991,7 +1010,9 @@ You can pass additional SQL parameters as a tuple or dictionary.
 
 The method will block until the operation is completed, and the return value will be the return from calling ``conn.execute(...)`` using the underlying ``sqlite3`` Python library.
 
-If you pass ``block=False`` this behaviour changes to "fire and forget" - queries will be added to the write queue and executed in a separate thread while your code can continue to do other things. The method will return a UUID representing the queued task.
+If you pass ``block=False`` this behavior changes to "fire and forget" - queries will be added to the write queue and executed in a separate thread while your code can continue to do other things. The method will return a UUID representing the queued task.
+
+Each call to ``execute_write()`` will be executed inside a transaction.
 
 .. _database_execute_write_script:
 
@@ -999,6 +1020,8 @@ await db.execute_write_script(sql, block=True)
 -----------------------------------------------
 
 Like ``execute_write()`` but can be used to send multiple SQL statements in a single string separated by semicolons, using the ``sqlite3`` `conn.executescript() <https://docs.python.org/3/library/sqlite3.html#sqlite3.Cursor.executescript>`__ method.
+
+Each call to ``execute_write_script()`` will be executed inside a transaction.
 
 .. _database_execute_write_many:
 
@@ -1014,10 +1037,12 @@ Like ``execute_write()`` but uses the ``sqlite3`` `conn.executemany() <https://d
         [(1, "Melanie"), (2, "Selma"), (2, "Viktor")],
     )
 
+Each call to ``execute_write_many()`` will be executed inside a transaction.
+
 .. _database_execute_write_fn:
 
-await db.execute_write_fn(fn, block=True)
-------------------------------------------
+await db.execute_write_fn(fn, block=True, transaction=True)
+-----------------------------------------------------------
 
 This method works like ``.execute_write()``, but instead of a SQL statement you give it a callable Python function. Your function will be queued up and then called when the write connection is available, passing that connection as the argument to the function.
 
@@ -1033,7 +1058,6 @@ For example:
 
     def delete_and_return_count(conn):
         conn.execute("delete from some_table where id > 5")
-        conn.commit()
         return conn.execute(
             "select count(*) from some_table"
         ).fetchone()[0]
@@ -1050,9 +1074,26 @@ The value returned from ``await database.execute_write_fn(...)`` will be the ret
 
 If your function raises an exception that exception will be propagated up to the ``await`` line.
 
-If you see ``OperationalError: database table is locked`` errors you should check that you remembered to explicitly call ``conn.commit()`` in your write function.
+By default your function will be executed inside a transaction. You can pass ``transaction=False`` to disable this behavior, though if you do that you should be careful to manually apply transactions - ideally using the ``with conn:`` pattern, or you may see ``OperationalError: database table is locked`` errors.
 
 If you specify ``block=False`` the method becomes fire-and-forget, queueing your function to be executed and then allowing your code after the call to ``.execute_write_fn()`` to continue running while the underlying thread waits for an opportunity to run your function. A UUID representing the queued task will be returned. Any exceptions in your code will be silently swallowed.
+
+.. _database_execute_isolated_fn:
+
+await db.execute_isolated_fn(fn)
+--------------------------------
+
+This method works is similar to :ref:`execute_write_fn() <database_execute_write_fn>` but executes the provided function in an entirely isolated SQLite connection, which is opened, used and then closed again in a single call to this method.
+
+The :ref:`prepare_connection() <plugin_hook_prepare_connection>` plugin hook is not executed against this connection.
+
+This allows plugins to execute database operations that might conflict with how database connections are usually configured. For example, running a ``VACUUM`` operation while bypassing any restrictions placed by the `datasette-sqlite-authorizer <https://github.com/datasette/datasette-sqlite-authorizer>`__ plugin.
+
+Plugins can also use this method to load potentially dangerous SQLite extensions, use them to perform an operation and then have them safely unloaded at the end of the call, without risk of exposing them to other connections.
+
+Functions run using ``execute_isolated_fn()`` share the same queue as ``execute_write_fn()``, which guarantees that no writes can be executed at the same time as the isolated function is executing.
+
+The return value of the function will be returned by this method. Any exceptions raised by the function will be raised out of the ``await`` line as well.
 
 .. _database_close:
 
@@ -1181,7 +1222,7 @@ Plugins can access this database by calling ``internal_db = datasette.get_intern
 
 Plugin authors are asked to practice good etiquette when using the internal database, as all plugins use the same database to store data. For example:
 
-1. Use a unique prefix when creating tables, indices, and triggera in the internal database. If your plugin is called ``datasette-xyz``, then prefix names with ``datasette_xyz_*``.
+1. Use a unique prefix when creating tables, indices, and triggers in the internal database. If your plugin is called ``datasette-xyz``, then prefix names with ``datasette_xyz_*``.
 2. Avoid long-running write statements that may stall or block other plugins that are trying to write at the same time.
 3. Use temporary tables or shared in-memory attached databases when possible.
 4. Avoid implementing features that could expose private data stored in the internal database by other plugins.
@@ -1193,7 +1234,7 @@ The datasette.utils module
 
 The ``datasette.utils`` module contains various utility functions used by Datasette. As a general rule you should consider anything in this module to be unstable - functions and classes here could change without warning or be removed entirely between Datasette releases, without being mentioned in the release notes.
 
-The exception to this rule is anythang that is documented here. If you find a need for an undocumented utility function in your own work, consider `opening an issue <https://github.com/simonw/datasette/issues/new>`__ requesting that the function you are using be upgraded to documented and supported status.
+The exception to this rule is anything that is documented here. If you find a need for an undocumented utility function in your own work, consider `opening an issue <https://github.com/simonw/datasette/issues/new>`__ requesting that the function you are using be upgraded to documented and supported status.
 
 .. _internals_utils_parse_metadata:
 
@@ -1214,6 +1255,15 @@ await_me_maybe(value)
 Utility function for calling ``await`` on a return value if it is awaitable, otherwise returning the value. This is used by Datasette to support plugin hooks that can optionally return awaitable functions. Read more about this function in `The “await me maybe” pattern for Python asyncio <https://simonwillison.net/2020/Sep/2/await-me-maybe/>`__.
 
 .. autofunction:: datasette.utils.await_me_maybe
+
+.. _internals_utils_derive_named_parameters:
+
+derive_named_parameters(db, sql)
+--------------------------------
+
+Derive the list of named parameters referenced in a SQL query, using an ``explain`` query executed against the provided database.
+
+.. autofunction:: datasette.utils.derive_named_parameters
 
 .. _internals_tilde_encoding:
 

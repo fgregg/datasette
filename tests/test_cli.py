@@ -4,7 +4,6 @@ from .fixtures import (
     TestClient as _TestClient,
     EXPECTED_PLUGINS,
 )
-import asyncio
 from datasette.app import SETTINGS
 from datasette.plugins import DEFAULT_PLUGINS
 from datasette.cli import cli, serve
@@ -19,7 +18,6 @@ import pytest
 import sys
 import textwrap
 from unittest import mock
-import urllib
 
 
 def test_inspect_cli(app_client):
@@ -100,7 +98,11 @@ def test_spatialite_error_if_cannot_find_load_extension_spatialite():
 def test_plugins_cli(app_client):
     runner = CliRunner()
     result1 = runner.invoke(cli, ["plugins"])
-    assert json.loads(result1.output) == EXPECTED_PLUGINS
+    actual_plugins = sorted(
+        [p for p in json.loads(result1.output) if p["name"] != "TrackEventPlugin"],
+        key=lambda p: p["name"],
+    )
+    assert actual_plugins == EXPECTED_PLUGINS
     # Try with --all
     result2 = runner.invoke(cli, ["plugins", "--all"])
     names = [p["name"] for p in json.loads(result2.output)]
@@ -335,9 +337,11 @@ def test_serve_create(tmpdir):
 def test_serve_config(tmpdir, argument, format_):
     config_path = tmpdir / "datasette.{}".format(format_)
     config_path.write_text(
-        "settings:\n  default_page_size: 5\n"
-        if format_ == "yaml"
-        else '{"settings": {"default_page_size": 5}}',
+        (
+            "settings:\n  default_page_size: 5\n"
+            if format_ == "yaml"
+            else '{"settings": {"default_page_size": 5}}'
+        ),
         "utf-8",
     )
     runner = CliRunner()

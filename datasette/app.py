@@ -34,6 +34,7 @@ from jinja2 import (
 from jinja2.environment import Template
 from jinja2.exceptions import TemplateNotFound
 
+from .events import Event
 from .views import Context
 from .views.base import ureg
 from .views.database import database_download, DatabaseView, TableCreateView
@@ -73,13 +74,15 @@ from .utils import (
     find_spatialite,
     format_bytes,
     module_from_path,
+    move_plugins_and_allow,
+    move_table_config,
     parse_metadata,
     resolve_env_secrets,
     resolve_routes,
-    fail_if_plugins_in_metadata,
     tilde_decode,
     to_css_class,
     urlsafe_components,
+    redact_keys,
     row_sql_params_pks,
 )
 from .utils.asgi import (
@@ -335,16 +338,20 @@ class Datasette:
             ]
         if config_dir and metadata_files and not metadata:
             with metadata_files[0].open() as fp:
-                metadata = fail_if_plugins_in_metadata(
-                    parse_metadata(fp.read()), metadata_files[0].name
-                )
+                metadata = parse_metadata(fp.read())
 
         if config_dir and config_files and not config:
             with config_files[0].open() as fp:
                 config = parse_metadata(fp.read())
 
-        self._metadata_local = fail_if_plugins_in_metadata(metadata or {})
+        # Move any "plugins" and "allow" settings from metadata to config - updates them in place
+        metadata = metadata or {}
+        config = config or {}
+        metadata, config = move_plugins_and_allow(metadata, config)
+        # Now migrate any known table configuration settings over as well
+        metadata, config = move_table_config(metadata, config)
 
+        self._metadata_local = metadata or {}
         self.sqlite_extensions = []
         for extension in sqlite_extensions or []:
             # Resolve spatialite, if requested
@@ -420,20 +427,30 @@ class Datasette:
                 ),
             ]
         )
-        self.jinja_env = Environment(
+        environment = Environment(
             loader=template_loader,
             autoescape=True,
             enable_async=True,
             # undefined=StrictUndefined,
         )
-        self.jinja_env.filters["escape_css_string"] = escape_css_string
-        self.jinja_env.filters["quote_plus"] = urllib.parse.quote_plus
-        self.jinja_env.filters["escape_sqlite"] = escape_sqlite
-        self.jinja_env.filters["to_css_class"] = to_css_class
+        environment.filters["escape_css_string"] = escape_css_string
+        environment.filters["quote_plus"] = urllib.parse.quote_plus
+        self._jinja_env = environment
+        environment.filters["escape_sqlite"] = escape_sqlite
+        environment.filters["to_css_class"] = to_css_class
         self._register_renderers()
         self._permission_checks = collections.deque(maxlen=200)
         self._root_token = secrets.token_hex(32)
         self.client = DatasetteClient(self)
+
+    def get_jinja_environment(self, request: Request = None) -> Environment:
+        environment = self._jinja_env
+        if request:
+            for environment in pm.hook.jinja2_environment_from_request(
+                datasette=self, request=request, env=environment
+            ):
+                pass
+        return environment
 
     def get_permission(self, name_or_abbr: str) -> "Permission":
         """
@@ -495,6 +512,14 @@ class Datasette:
         # This must be called for Datasette to be in a usable state
         if self._startup_invoked:
             return
+        # Register event classes
+        event_classes = []
+        for hook in pm.hook.register_events(datasette=self):
+            extra_classes = await await_me_maybe(hook)
+            if extra_classes:
+                event_classes.extend(extra_classes)
+        self.event_classes = tuple(event_classes)
+
         # Register permissions, but watch out for duplicate name/abbr
         names = {}
         abbrs = {}
@@ -514,7 +539,7 @@ class Datasette:
                         abbrs[p.abbr] = p
                     self.permissions[p.name] = p
         for hook in pm.hook.prepare_jinja2_environment(
-            env=self.jinja_env, datasette=self
+            env=self._jinja_env, datasette=self
         ):
             await await_me_maybe(hook)
         for hook in pm.hook.startup(datasette=self):
@@ -863,14 +888,23 @@ class Datasette:
         result = await await_me_maybe(result)
         return result
 
+    async def track_event(self, event: Event):
+        assert isinstance(event, self.event_classes), "Invalid event type: {}".format(
+            type(event)
+        )
+        for hook in pm.hook.track_event(datasette=self, event=event):
+            await await_me_maybe(hook)
+
     async def permission_allowed(
-        self, actor, action, resource=None, default=DEFAULT_NOT_SET
+        self, actor, action, resource=None, *, default=DEFAULT_NOT_SET
     ):
         """Check permissions using the permissions_allowed plugin hook"""
         result = None
         # Use default from registered permission, if available
         if default is DEFAULT_NOT_SET and action in self.permissions:
             default = self.permissions[action].default
+        opinions = []
+        # Every plugin is consulted for their opinion
         for check in pm.hook.permission_allowed(
             datasette=self,
             actor=actor,
@@ -879,14 +913,24 @@ class Datasette:
         ):
             check = await await_me_maybe(check)
             if check is not None:
-                result = check
+                opinions.append(check)
+
+        result = None
+        # If any plugin said False it's false - the veto rule
+        if any(not r for r in opinions):
+            result = False
+        elif any(r for r in opinions):
+            # Otherwise, if any plugin said True it's true
+            result = True
+
         used_default = False
         if result is None:
+            # No plugin expressed an opinion, so use the default
             result = default
             used_default = True
         self._permission_checks.append(
             {
-                "when": datetime.datetime.utcnow().isoformat(),
+                "when": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "actor": actor,
                 "action": action,
                 "resource": resource,
@@ -1173,10 +1217,11 @@ class Datasette:
     def _actor(self, request):
         return {"actor": request.actor}
 
-    def table_metadata(self, database, table):
-        """Fetch table-specific metadata."""
+    async def table_config(self, database: str, table: str) -> dict:
+        """Return dictionary of configuration for specified table"""
         return (
-            (self.metadata("databases") or {})
+            (self.config or {})
+            .get("databases", {})
             .get(database, {})
             .get("tables", {})
             .get(table, {})
@@ -1218,7 +1263,7 @@ class Datasette:
         else:
             if isinstance(templates, str):
                 templates = [templates]
-            template = self.jinja_env.select_template(templates)
+            template = self.get_jinja_environment(request).select_template(templates)
         if dataclasses.is_dataclass(context):
             context = dataclasses.asdict(context)
         body_scripts = []
@@ -1346,6 +1391,11 @@ class Datasette:
             output.append(script)
         return output
 
+    def _config(self):
+        return redact_keys(
+            self.config, ("secret", "key", "password", "token", "hash", "dsn")
+        )
+
     def _routes(self):
         routes = []
 
@@ -1405,12 +1455,8 @@ class Datasette:
             r"/-/settings(\.(?P<format>json))?$",
         )
         add_route(
-            permanent_redirect("/-/settings.json"),
-            r"/-/config.json",
-        )
-        add_route(
-            permanent_redirect("/-/settings"),
-            r"/-/config",
+            JsonDataView.as_view(self, "config.json", lambda: self._config()),
+            r"/-/config(\.(?P<format>json))?$",
         )
         add_route(
             JsonDataView.as_view(self, "threads.json", self._threads),
@@ -1568,16 +1614,6 @@ class DatasetteRouter:
     def __init__(self, datasette, routes):
         self.ds = datasette
         self.routes = routes or []
-        # Build a list of pages/blah/{name}.html matching expressions
-        pattern_templates = [
-            filepath
-            for filepath in self.ds.jinja_env.list_templates()
-            if "{" in filepath and filepath.startswith("pages/")
-        ]
-        self.page_routes = [
-            (route_pattern_from_filepath(filepath[len("pages/") :]), filepath)
-            for filepath in pattern_templates
-        ]
 
     async def __call__(self, scope, receive, send):
         # Because we care about "foo/bar" v.s. "foo%2Fbar" we decode raw_path ourselves
@@ -1677,13 +1713,24 @@ class DatasetteRouter:
             route_path = request.scope.get("route_path", request.scope["path"])
             # Jinja requires template names to use "/" even on Windows
             template_name = "pages" + route_path + ".html"
+            # Build a list of pages/blah/{name}.html matching expressions
+            environment = self.ds.get_jinja_environment(request)
+            pattern_templates = [
+                filepath
+                for filepath in environment.list_templates()
+                if "{" in filepath and filepath.startswith("pages/")
+            ]
+            page_routes = [
+                (route_pattern_from_filepath(filepath[len("pages/") :]), filepath)
+                for filepath in pattern_templates
+            ]
             try:
-                template = self.ds.jinja_env.select_template([template_name])
+                template = environment.select_template([template_name])
             except TemplateNotFound:
                 template = None
             if template is None:
                 # Try for a pages/blah/{name}.html template match
-                for regex, wildcard_template in self.page_routes:
+                for regex, wildcard_template in page_routes:
                     match = regex.match(route_path)
                     if match is not None:
                         context.update(match.groupdict())
@@ -1886,37 +1933,40 @@ class DatasetteClient:
             path = f"http://localhost{path}"
         return path
 
+    async def _request(self, method, path, **kwargs):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=self.app),
+            cookies=kwargs.pop("cookies", None),
+        ) as client:
+            return await getattr(client, method)(self._fix(path), **kwargs)
+
     async def get(self, path, **kwargs):
-        async with httpx.AsyncClient(app=self.app) as client:
-            return await client.get(self._fix(path), **kwargs)
+        return await self._request("get", path, **kwargs)
 
     async def options(self, path, **kwargs):
-        async with httpx.AsyncClient(app=self.app) as client:
-            return await client.options(self._fix(path), **kwargs)
+        return await self._request("options", path, **kwargs)
 
     async def head(self, path, **kwargs):
-        async with httpx.AsyncClient(app=self.app) as client:
-            return await client.head(self._fix(path), **kwargs)
+        return await self._request("head", path, **kwargs)
 
     async def post(self, path, **kwargs):
-        async with httpx.AsyncClient(app=self.app) as client:
-            return await client.post(self._fix(path), **kwargs)
+        return await self._request("post", path, **kwargs)
 
     async def put(self, path, **kwargs):
-        async with httpx.AsyncClient(app=self.app) as client:
-            return await client.put(self._fix(path), **kwargs)
+        return await self._request("put", path, **kwargs)
 
     async def patch(self, path, **kwargs):
-        async with httpx.AsyncClient(app=self.app) as client:
-            return await client.patch(self._fix(path), **kwargs)
+        return await self._request("patch", path, **kwargs)
 
     async def delete(self, path, **kwargs):
-        async with httpx.AsyncClient(app=self.app) as client:
-            return await client.delete(self._fix(path), **kwargs)
+        return await self._request("delete", path, **kwargs)
 
     async def request(self, method, path, **kwargs):
         avoid_path_rewrites = kwargs.pop("avoid_path_rewrites", None)
-        async with httpx.AsyncClient(app=self.app) as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=self.app),
+            cookies=kwargs.pop("cookies", None),
+        ) as client:
             return await client.request(
                 method, self._fix(path, avoid_path_rewrites), **kwargs
             )

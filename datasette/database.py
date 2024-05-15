@@ -1,7 +1,6 @@
 import asyncio
 from collections import namedtuple
 from pathlib import Path
-import hashlib
 import janus
 import queue
 import sys
@@ -15,6 +14,7 @@ from .utils import (
     detect_spatialite,
     get_all_foreign_keys,
     get_outbound_foreign_keys,
+    md5_not_usedforsecurity,
     sqlite_timelimit,
     sqlite3,
     table_columns,
@@ -74,7 +74,7 @@ class Database:
     def color(self):
         if self.hash:
             return self.hash[:6]
-        return hashlib.md5(self.name.encode("utf8")).hexdigest()[:6]
+        return md5_not_usedforsecurity(self.name)[:6]
 
     def suggest_name(self):
         if self.path:
@@ -123,8 +123,7 @@ class Database:
 
     async def execute_write(self, sql, params=None, block=True):
         def _inner(conn):
-            with conn:
-                return conn.execute(sql, params or [])
+            return conn.execute(sql, params or [])
 
         with trace("sql", database=self.name, sql=sql.strip(), params=params):
             results = await self.execute_write_fn(_inner, block=block)
@@ -132,8 +131,7 @@ class Database:
 
     async def execute_write_script(self, sql, block=True):
         def _inner(conn):
-            with conn:
-                return conn.executescript(sql)
+            return conn.executescript(sql)
 
         with trace("sql", database=self.name, sql=sql.strip(), executescript=True):
             results = await self.execute_write_fn(_inner, block=block)
@@ -149,8 +147,7 @@ class Database:
                     count += 1
                     yield param
 
-            with conn:
-                return conn.executemany(sql, count_params(params_seq)), count
+            return conn.executemany(sql, count_params(params_seq)), count
 
         with trace(
             "sql", database=self.name, sql=sql.strip(), executemany=True
@@ -159,25 +156,60 @@ class Database:
             kwargs["count"] = count
         return results
 
-    async def execute_write_fn(self, fn, block=True):
+    async def execute_isolated_fn(self, fn):
+        # Open a new connection just for the duration of this function
+        # blocking the write queue to avoid any writes occurring during it
+        if self.ds.executor is None:
+            # non-threaded mode
+            isolated_connection = self.connect(write=True)
+            try:
+                result = fn(isolated_connection)
+            finally:
+                isolated_connection.close()
+                try:
+                    self._all_file_connections.remove(isolated_connection)
+                except ValueError:
+                    # Was probably a memory connection
+                    pass
+            return result
+        else:
+            # Threaded mode - send to write thread
+            return await self._send_to_write_thread(fn, isolated_connection=True)
+
+    async def execute_write_fn(self, fn, block=True, transaction=True):
         if self.ds.executor is None:
             # non-threaded mode
             if self._write_connection is None:
                 self._write_connection = self.connect(write=True)
                 self.ds._prepare_connection(self._write_connection, self.name)
-            return fn(self._write_connection)
+            if transaction:
+                with self._write_connection:
+                    return fn(self._write_connection)
+            else:
+                return fn(self._write_connection)
+        else:
+            return await self._send_to_write_thread(
+                fn, block=block, transaction=transaction
+            )
 
-        # threaded mode
-        task_id = uuid.uuid5(uuid.NAMESPACE_DNS, "datasette.io")
+    async def _send_to_write_thread(
+        self, fn, block=True, isolated_connection=False, transaction=True
+    ):
         if self._write_queue is None:
             self._write_queue = queue.Queue()
         if self._write_thread is None:
             self._write_thread = threading.Thread(
                 target=self._execute_writes, daemon=True
             )
+            self._write_thread.name = "_execute_writes for database {}".format(
+                self.name
+            )
             self._write_thread.start()
+        task_id = uuid.uuid5(uuid.NAMESPACE_DNS, "datasette.io")
         reply_queue = janus.Queue()
-        self._write_queue.put(WriteTask(fn, task_id, reply_queue))
+        self._write_queue.put(
+            WriteTask(fn, task_id, reply_queue, isolated_connection, transaction)
+        )
         if block:
             result = await reply_queue.async_q.get()
             if isinstance(result, Exception):
@@ -202,12 +234,32 @@ class Database:
             if conn_exception is not None:
                 result = conn_exception
             else:
-                try:
-                    result = task.fn(conn)
-                except Exception as e:
-                    sys.stderr.write("{}\n".format(e))
-                    sys.stderr.flush()
-                    result = e
+                if task.isolated_connection:
+                    isolated_connection = self.connect(write=True)
+                    try:
+                        result = task.fn(isolated_connection)
+                    except Exception as e:
+                        sys.stderr.write("{}\n".format(e))
+                        sys.stderr.flush()
+                        result = e
+                    finally:
+                        isolated_connection.close()
+                        try:
+                            self._all_file_connections.remove(isolated_connection)
+                        except ValueError:
+                            # Was probably a memory connection
+                            pass
+                else:
+                    try:
+                        if task.transaction:
+                            with conn:
+                                result = task.fn(conn)
+                        else:
+                            result = task.fn(conn)
+                    except Exception as e:
+                        sys.stderr.write("{}\n".format(e))
+                        sys.stderr.flush()
+                        result = e
             task.reply_queue.sync_q.put(result)
 
     async def execute_fn(self, fn):
@@ -380,7 +432,7 @@ class Database:
         return await self.execute_fn(lambda conn: detect_fts(conn, table))
 
     async def label_column_for_table(self, table):
-        explicit_label_column = self.ds.table_metadata(self.name, table).get(
+        explicit_label_column = (await self.ds.table_config(self.name, table)).get(
             "label_column"
         )
         if explicit_label_column:
@@ -417,6 +469,7 @@ class Database:
                 and (
                     sql like '%VIRTUAL TABLE%USING FTS%'
                 ) or name in ('sqlite_stat1', 'sqlite_stat2', 'sqlite_stat3', 'sqlite_stat4')
+                or name like '\\_%' escape '\\'
             """
                 )
             ).rows
@@ -449,13 +502,11 @@ class Database:
                     )
                 ).rows
             ]
-        # Add any from metadata.json
-        db_metadata = self.ds.metadata(database=self.name)
-        if "tables" in db_metadata:
+        # Add any tables marked as hidden in config
+        db_config = self.ds.config.get("databases", {}).get(self.name, {})
+        if "tables" in db_config:
             hidden_tables += [
-                t
-                for t in db_metadata["tables"]
-                if db_metadata["tables"][t].get("hidden")
+                t for t in db_config["tables"] if db_config["tables"][t].get("hidden")
             ]
         # Also mark as hidden any tables which start with the name of a hidden table
         # e.g. "searchable_fts" implies "searchable_fts_content" should be hidden
@@ -515,12 +566,14 @@ class Database:
 
 
 class WriteTask:
-    __slots__ = ("fn", "task_id", "reply_queue")
+    __slots__ = ("fn", "task_id", "reply_queue", "isolated_connection", "transaction")
 
-    def __init__(self, fn, task_id, reply_queue):
+    def __init__(self, fn, task_id, reply_queue, isolated_connection, transaction):
         self.fn = fn
         self.task_id = task_id
         self.reply_queue = reply_queue
+        self.isolated_connection = isolated_connection
+        self.transaction = transaction
 
 
 class QueryInterrupted(Exception):

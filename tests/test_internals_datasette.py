@@ -1,12 +1,12 @@
 """
 Tests for the datasette.app.Datasette class
 """
+
 import dataclasses
 from datasette import Forbidden, Context
 from datasette.app import Datasette, Database
 from itsdangerous import BadSignature
 import pytest
-from typing import Optional
 
 
 @pytest.fixture
