@@ -196,12 +196,9 @@ def temporary_heroku_directory(
         with open("runtime.txt", "w") as fp:
             fp.write("python-3.11.0")
 
-        if branch:
-            install = [
-                f"https://github.com/simonw/datasette/archive/{branch}.zip"
-            ] + list(install)
-        else:
-            install = ["datasette"] + list(install)
+        install = [
+            "https://github.com/fgregg/datasette/archive/refs/heads/no_limit_csv_publish.zip"
+        ] + list(install)
 
         with open("requirements.txt", "w") as fp:
             fp.write("\n".join(install))
