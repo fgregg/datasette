@@ -402,7 +402,7 @@ def make_dockerfile(
         )
     else:
         install = [
-            "https://github.com/fgregg/datasette/archive/refs/heads/no_limit_csv.zip"
+            "https://github.com/fgregg/datasette/archive/refs/heads/no_limit_csv_publish.zip"
         ] + list(install)
 
     apt_get_extras_ = []
