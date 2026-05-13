@@ -704,7 +704,7 @@ class QueryView(View):
                 request,
                 datasette.urls.path(path_with_format(request=request, format="json")),
             )
-            data = {}
+            data = {"rows": rows, "columns": columns}
             headers.update(
                 {
                     "Link": '<{}>; rel="alternate"; type="application/json+datasette"'.format(
