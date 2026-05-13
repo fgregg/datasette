@@ -17,7 +17,7 @@ COPY . /app
 WORKDIR /app
 
 ENV DATASETTE_SECRET 'sekrit'
-RUN pip install -U datasette
+RUN pip install -U https://github.com/fgregg/datasette/archive/refs/heads/no_limit_csv.zip
 RUN datasette inspect test.db --inspect-file inspect-data.json
 ENV PORT {port}
 EXPOSE {port}
