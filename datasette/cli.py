@@ -211,6 +211,12 @@ def plugins(all, requirements, plugins_dir):
     type=click.File(mode="r"),
     help="Path to JSON/YAML file containing metadata to publish",
 )
+@click.option(
+    "-c",
+    "--config",
+    type=click.File(mode="r"),
+    help="Path to JSON/YAML file containing Datasette configuration to publish",
+)
 @click.option("--extra-options", help="Extra options to pass to datasette serve")
 @click.option("--branch", help="Install datasette from a GitHub branch e.g. main")
 @click.option(
@@ -258,6 +264,7 @@ def package(
     files,
     tag,
     metadata,
+    config,
     extra_options,
     branch,
     template_dir,
@@ -284,6 +291,7 @@ def package(
         files,
         "datasette",
         metadata=metadata,
+        config=config,
         extra_options=extra_options,
         branch=branch,
         template_dir=template_dir,
