@@ -646,7 +646,7 @@ class QueryView(View):
         if format_ == "csv":
 
             async def fetch_data_for_csv(request, _next=None):
-                results = await db.execute(sql, params, truncate=True)
+                results = await db.execute(sql, params, truncate=False)
                 data = {"rows": results.rows, "columns": results.columns}
                 return data, None, None
 
