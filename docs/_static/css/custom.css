@@ -1,8 +1,7 @@
 a.external {
     overflow-wrap: anywhere;
 }
-body[data-theme="dark"] .sidebar-logo-container {
-    background-color: white;
-    padding: 5px;
-    opacity: 0.6;
+
+div .wy-side-nav-search > div.version {
+    color: rgba(0,0,0,0.75);
 }

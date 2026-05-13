@@ -11,8 +11,7 @@ data as CSV" link.
 You can also use the advanced export form for more control over the resulting
 file, which looks like this and has the following options:
 
-.. image:: https://github.com/simonw/datasette-screenshots/blob/0.62/advanced-export.png?raw=true
-   :alt: Advanced export form. You can get the data in different JSON shapes, and CSV options are download file, expand labels and stream all rows.
+.. image:: advanced_export.png
 
 * **download file** - instead of displaying CSV in your browser, this forces
   your browser to download the CSV to your downloads directory.
@@ -60,3 +59,21 @@ truncation error message.
 You can increase or remove this limit using the :ref:`setting_max_csv_mb` config
 setting. You can also disable the CSV export feature entirely using
 :ref:`setting_allow_csv_stream`.
+
+A note on URLs
+--------------
+
+The default URL for the CSV representation of a table is that table with
+``.csv`` appended to it:
+
+* https://latest.datasette.io/fixtures/facetable - HTML interface
+* https://latest.datasette.io/fixtures/facetable.csv - CSV export
+* https://latest.datasette.io/fixtures/facetable.json - JSON API
+
+This pattern doesn't work for tables with names that already end in ``.csv`` or
+``.json``. For those tables, you can instead use the ``_format=`` query string
+parameter:
+
+* https://latest.datasette.io/fixtures/table%2Fwith%2Fslashes.csv - HTML interface
+* https://latest.datasette.io/fixtures/table%2Fwith%2Fslashes.csv?_format=csv - CSV export
+* https://latest.datasette.io/fixtures/table%2Fwith%2Fslashes.csv?_format=json - JSON API

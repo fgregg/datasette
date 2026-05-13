@@ -4,37 +4,17 @@
  SpatiaLite
 ============
 
-The `SpatiaLite module <https://www.gaia-gis.it/fossil/libspatialite/index>`_ for SQLite adds features for handling geographic and spatial data. For an example of what you can do with it, see the tutorial `Building a location to time zone API with SpatiaLite <https://datasette.io/tutorials/spatialite>`__.
+The `SpatiaLite module <https://www.gaia-gis.it/fossil/libspatialite/index>`_ for SQLite adds features for handling geographic and spatial data. For an example of what you can do with it, see the tutorial `Building a location to time zone API with SpatiaLite, OpenStreetMap and Datasette <https://simonwillison.net/2017/Dec/12/location-time-zone-api/>`_.
 
 To use it with Datasette, you need to install the ``mod_spatialite`` dynamic library. This can then be loaded into Datasette using the ``--load-extension`` command-line option.
 
 Datasette can look for SpatiaLite in common installation locations if you run it like this::
 
-    datasette --load-extension=spatialite --setting default_allow_sql off
+    datasette --load-extension=spatialite
 
 If SpatiaLite is in another location, use the full path to the extension instead::
 
-    datasette --setting default_allow_sql off \
-      --load-extension=/usr/local/lib/mod_spatialite.dylib
-
-.. _spatialite_warning:
-
-Warning
-=======
-
-.. warning::
-    The SpatiaLite extension adds `a large number of additional SQL functions <https://www.gaia-gis.it/gaia-sins/spatialite-sql-5.0.1.html>`__, some of which are not be safe for untrusted users to execute: they may cause the Datasette server to crash.
-
-    You should not expose a SpatiaLite-enabled Datasette instance to the public internet without taking extra measures to secure it against potentially harmful SQL queries.
-
-    The following steps are recommended:
-
-    - Disable arbitrary SQL queries by untrusted users. See :ref:`authentication_permissions_execute_sql` for ways to do this. The easiest is to start Datasette with the ``datasette --setting default_allow_sql off`` option.
-    - Define :ref:`canned_queries` with the SQL queries that use SpatiaLite functions that you want people to be able to execute.
-
-    The `Datasette SpatiaLite tutorial <https://datasette.io/tutorials/spatialite>`__ includes detailed instructions for running SpatiaLite safely using these techniques
-
-.. _spatialite_installation:
+    datasette --load-extension=/usr/local/lib/mod_spatialite.dylib
 
 Installation
 ============
@@ -78,26 +58,21 @@ Here's a recipe for taking a table with existing latitude and longitude columns,
 .. code-block:: python
 
     import sqlite3
-
-    conn = sqlite3.connect("museums.db")
+    conn = sqlite3.connect('museums.db')
     # Lead the spatialite extension:
     conn.enable_load_extension(True)
-    conn.load_extension("/usr/local/lib/mod_spatialite.dylib")
+    conn.load_extension('/usr/local/lib/mod_spatialite.dylib')
     # Initialize spatial metadata for this database:
-    conn.execute("select InitSpatialMetadata(1)")
+    conn.execute('select InitSpatialMetadata(1)')
     # Add a geometry column called point_geom to our museums table:
-    conn.execute(
-        "SELECT AddGeometryColumn('museums', 'point_geom', 4326, 'POINT', 2);"
-    )
+    conn.execute("SELECT AddGeometryColumn('museums', 'point_geom', 4326, 'POINT', 2);")
     # Now update that geometry column with the lat/lon points
-    conn.execute("""
+    conn.execute('''
         UPDATE museums SET
         point_geom = GeomFromText('POINT('||"longitude"||' '||"latitude"||')',4326);
-    """)
+    ''')
     # Now add a spatial index to that column
-    conn.execute(
-        'select CreateSpatialIndex("museums", "point_geom");'
-    )
+    conn.execute('select CreateSpatialIndex("museums", "point_geom");')
     # If you don't commit your changes will not be persisted:
     conn.commit()
     conn.close()
@@ -154,10 +129,7 @@ The `shapefile format <https://en.wikipedia.org/wiki/Shapefile>`_ is a common fo
 
 Try it now with the North America shapefile available from the University of North Carolina `Global River Database <http://gaia.geosci.unc.edu/rivers/>`_ project. Download the file and unzip it (this will create files called ``narivs.dbf``, ``narivs.prj``, ``narivs.shp`` and ``narivs.shx`` in the current directory), then run the following::
 
-    spatialite rivers-database.db
-
-::
-
+    $ spatialite rivers-database.db
     SpatiaLite version ..: 4.3.0a	Supported Extensions:
     ...
     spatialite> .loadshp narivs rivers CP1252 23032
@@ -214,37 +186,28 @@ Here's Python code to create a SQLite database, enable SpatiaLite, create a plac
 .. code-block:: python
 
     import sqlite3
-
-    conn = sqlite3.connect("places.db")
+    conn = sqlite3.connect('places.db')
     # Enable SpatialLite extension
     conn.enable_load_extension(True)
-    conn.load_extension("/usr/local/lib/mod_spatialite.dylib")
+    conn.load_extension('/usr/local/lib/mod_spatialite.dylib')
     # Create the masic countries table
-    conn.execute("select InitSpatialMetadata(1)")
-    conn.execute(
-        "create table places (id integer primary key, name text);"
-    )
+    conn.execute('select InitSpatialMetadata(1)')
+    conn.execute('create table places (id integer primary key, name text);')
     # Add a MULTIPOLYGON Geometry column
-    conn.execute(
-        "SELECT AddGeometryColumn('places', 'geom', 4326, 'MULTIPOLYGON', 2);"
-    )
+    conn.execute("SELECT AddGeometryColumn('places', 'geom', 4326, 'MULTIPOLYGON', 2);")
     # Add a spatial index against the new column
     conn.execute("SELECT CreateSpatialIndex('places', 'geom');")
     # Now populate the table
     from shapely.geometry.multipolygon import MultiPolygon
     from shapely.geometry import shape
     import requests
-
-    geojson = requests.get(
-        "https://data.whosonfirst.org/404/227/475/404227475.geojson"
-    ).json()
+    geojson = requests.get('https://data.whosonfirst.org/404/227/475/404227475.geojson').json()
     # Convert to "Well Known Text" format
-    wkt = shape(geojson["geometry"]).wkt
+    wkt = shape(geojson['geometry']).wkt
     # Insert and commit the record
-    conn.execute(
-        "INSERT INTO places (id, name, geom) VALUES(null, ?, GeomFromText(?, 4326))",
-        ("Wales", wkt),
-    )
+    conn.execute("INSERT INTO places (id, name, geom) VALUES(null, ?, GeomFromText(?, 4326))", (
+       "Wales", wkt
+    ))
     conn.commit()
 
 Querying polygons using within()

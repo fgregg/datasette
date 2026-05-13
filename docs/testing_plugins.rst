@@ -15,14 +15,11 @@ If you use the template described in :ref:`writing_plugins_cookiecutter` your pl
 
     @pytest.mark.asyncio
     async def test_plugin_is_installed():
-        datasette = Datasette(memory=True)
+        datasette = Datasette([], memory=True)
         response = await datasette.client.get("/-/plugins.json")
         assert response.status_code == 200
         installed_plugins = {p["name"] for p in response.json()}
-        assert (
-            "datasette-plugin-template-demo"
-            in installed_plugins
-        )
+        assert "datasette-plugin-template-demo" in installed_plugins
 
 
 This test uses the :ref:`internals_datasette_client` object to exercise a test instance of Datasette. ``datasette.client`` is a wrapper around the `HTTPX <https://www.python-httpx.org/>`__ Python library which can imitate HTTP requests using ASGI. This is the recommended way to write tests against a Datasette instance.
@@ -33,16 +30,18 @@ You can install these packages like so::
 
     pip install pytest pytest-asyncio
 
-If you are building an installable package you can add them as test dependencies to your ``pyproject.toml`` file like this:
+If you are building an installable package you can add them as test dependencies to your ``setup.py`` module like this:
 
-.. code-block:: toml
+.. code-block:: python
 
-    [project]
-    name = "datasette-my-plugin"
-    # ...
-
-    [project.optional-dependencies]
-    test = ["pytest", "pytest-asyncio"]
+    setup(
+        name="datasette-my-plugin",
+        # ...
+        extras_require={
+            "test": ["pytest", "pytest-asyncio"]
+        },
+        tests_require=["datasette-my-plugin[test]"],
+    )
 
 You can then install the test dependencies like so::
 
@@ -51,89 +50,6 @@ You can then install the test dependencies like so::
 Then run the tests using pytest like so::
 
     pytest
-
-.. _testing_plugins_datasette_test_instance:
-
-Setting up a Datasette test instance
-------------------------------------
-
-The above example shows the easiest way to start writing tests against a Datasette instance:
-
-.. code-block:: python
-
-    from datasette.app import Datasette
-    import pytest
-
-
-    @pytest.mark.asyncio
-    async def test_plugin_is_installed():
-        datasette = Datasette(memory=True)
-        response = await datasette.client.get("/-/plugins.json")
-        assert response.status_code == 200
-
-Creating a ``Datasette()`` instance like this as useful shortcut in tests, but there is one detail you need to be aware of. It's important to ensure that the async method ``.invoke_startup()`` is called on that instance. You can do that like this:
-
-.. code-block:: python
-
-    datasette = Datasette(memory=True)
-    await datasette.invoke_startup()
-
-This method registers any :ref:`plugin_hook_startup` or :ref:`plugin_hook_prepare_jinja2_environment` plugins that might themselves need to make async calls.
-
-If you are using ``await datasette.client.get()`` and similar methods then you don't need to worry about this - Datasette automatically calls ``invoke_startup()`` the first time it handles a request.
-
-.. _testing_plugins_autoclose:
-
-Automatic cleanup of Datasette instances
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Installing Datasette also installs a small pytest plugin that automatically calls :ref:`datasette_close` on any ``Datasette()`` instance constructed during a test. This helps prevent large test suites from running out of file descriptors or leaking background threads from the hundreds of instances they may build up across a session.
-
-The plugin closes:
-
-- Instances created in the body of a test function.
-- Instances created inside **function-scoped** pytest fixtures (the default scope — ``@pytest.fixture`` with no ``scope=`` argument, or ``scope="function"``).
-
-The plugin deliberately does **not** close:
-
-- Instances created inside higher-scoped fixtures (``scope="session"``, ``"module"``, ``"class"`` or ``"package"``). Those fixtures are typically designed to produce a single ``Datasette`` that is shared across many tests, and closing it automatically would break the tests that run after the first.
-
-In practice this means downstream projects rarely need to call ``ds.close()`` themselves — function-scoped fixtures and inline test code are both covered automatically, while long-lived shared fixtures keep working as before.
-
-If you need to opt out of this behavior, add the following to your ``pytest.ini`` (or equivalent):
-
-.. code-block:: ini
-
-    [pytest]
-    datasette_autoclose = false
-
-.. _testing_datasette_client:
-
-Using datasette.client in tests
--------------------------------
-
-The :ref:`internals_datasette_client` mechanism is designed for use in tests. It provides access to a pre-configured `HTTPX async client <https://www.python-httpx.org/async/>`__ instance that can make GET, POST and other HTTP requests against a Datasette instance from inside a test.
-
-A simple test looks like this:
-
-.. literalinclude:: ../tests/test_docs.py
-   :language: python
-   :start-after: # -- start test_homepage --
-   :end-before: # -- end test_homepage --
-
-Or for a JSON API:
-
-.. literalinclude:: ../tests/test_docs.py
-   :language: python
-   :start-after: # -- start test_actor_is_null --
-   :end-before: # -- end test_actor_is_null --
-
-To make requests as an authenticated actor, create a signed ``ds_cookie`` using the ``datasette.client.actor_cookie()`` helper function and pass it in ``cookies=`` like this:
-
-.. literalinclude:: ../tests/test_docs.py
-   :language: python
-   :start-after: # -- start test_signed_cookie_actor --
-   :end-before: # -- end test_signed_cookie_actor --
 
 .. _testing_plugins_pdb:
 
@@ -171,45 +87,39 @@ Here's an example that uses the `sqlite-utils library <https://sqlite-utils.data
     import pytest
     import sqlite_utils
 
-
     @pytest.fixture(scope="session")
     def datasette(tmp_path_factory):
         db_directory = tmp_path_factory.mktemp("dbs")
         db_path = db_directory / "test.db"
         db = sqlite_utils.Database(db_path)
-        db["dogs"].insert_all(
-            [
-                {"id": 1, "name": "Cleo", "age": 5},
-                {"id": 2, "name": "Pancakes", "age": 4},
-            ],
-            pk="id",
-        )
+        db["dogs"].insert_all([
+            {"id": 1, "name": "Cleo", "age": 5},
+            {"id": 2, "name": "Pancakes", "age": 4}
+        ], pk="id")
         datasette = Datasette(
             [db_path],
             metadata={
                 "databases": {
                     "test": {
                         "tables": {
-                            "dogs": {"title": "Some dogs"}
+                            "dogs": {
+                                "title": "Some dogs"
+                            }
                         }
                     }
                 }
-            },
+            }
         )
         return datasette
 
-
     @pytest.mark.asyncio
     async def test_example_table_json(datasette):
-        response = await datasette.client.get(
-            "/test/dogs.json?_shape=array"
-        )
+        response = await datasette.client.get("/test/dogs.json?_shape=array")
         assert response.status_code == 200
         assert response.json() == [
             {"id": 1, "name": "Cleo", "age": 5},
             {"id": 2, "name": "Pancakes", "age": 4},
         ]
-
 
     @pytest.mark.asyncio
     async def test_example_table_html(datasette):
@@ -227,7 +137,6 @@ If you want to create that test database repeatedly for every individual test fu
     @pytest.fixture
     def datasette(tmp_path_factory):
         # This fixture will be executed repeatedly for every test
-        ...
 
 .. _testing_plugins_pytest_httpx:
 
@@ -258,10 +167,15 @@ As an example, here's a very simple plugin which executes an HTTP response and r
 
     async def fetch_url(datasette, request):
         if request.method == "GET":
-            return Response.html("""
+            return Response.html(
+                """
                 <form action="/-/fetch-url" method="post">
+                <input type="hidden" name="csrftoken" value="{}">
                 <input name="url"><input type="submit">
-            </form>""")
+            </form>""".format(
+                    request.scope["csrftoken"]()
+                )
+            )
         vars = await request.post_vars()
         url = vars["url"]
         return Response.text(httpx.get(url).text)
@@ -283,68 +197,14 @@ Here's a test for that plugin that mocks the HTTPX outbound request:
 
     async def test_outbound_http_call(httpx_mock):
         httpx_mock.add_response(
-            url="https://www.example.com/",
-            text="Hello world",
+            url='https://www.example.com/',
+            data='Hello world',
         )
         datasette = Datasette([], memory=True)
-        response = await datasette.client.post(
-            "/-/fetch-url",
-            data={"url": "https://www.example.com/"},
-        )
+        response = await datasette.client.post("/-/fetch-url", data={
+            "url": "https://www.example.com/"
+        })
         assert response.text == "Hello world"
 
         outbound_request = httpx_mock.get_request()
-        assert (
-            outbound_request.url == "https://www.example.com/"
-        )
-
-.. _testing_plugins_register_in_test:
-
-Registering a plugin for the duration of a test
------------------------------------------------
-
-When writing tests for plugins you may find it useful to register a test plugin just for the duration of a single test. You can do this using ``datasette.pm.register()`` and ``datasette.pm.unregister()`` like this:
-
-.. code-block:: python
-
-    from datasette import hookimpl
-    from datasette.app import Datasette
-    import pytest
-
-
-    @pytest.mark.asyncio
-    async def test_using_test_plugin():
-        class TestPlugin:
-            __name__ = "TestPlugin"
-
-            # Use hookimpl and method names to register hooks
-            @hookimpl
-            def register_routes(self):
-                return [
-                    (r"^/error$", lambda: 1 / 0),
-                ]
-
-        datasette = Datasette()
-        try:
-            # The test implementation goes here
-            datasette.pm.register(TestPlugin(), name="undo")
-            response = await datasette.client.get("/error")
-            assert response.status_code == 500
-        finally:
-            datasette.pm.unregister(name="undo")
-
-To reuse the same temporary plugin in multiple tests, you can register it inside a fixture in your ``conftest.py`` file like this:
-
-.. literalinclude:: ../tests/test_docs_plugins.py
-   :language: python
-   :start-after: # -- start datasette_with_plugin_fixture --
-   :end-before: # -- end datasette_with_plugin_fixture --
-
-Note the ``yield`` statement here - this ensures that the ``finally:`` block that unregisters the plugin is executed only after the test function itself has completed.
-
-Then in a test:
-
-.. literalinclude:: ../tests/test_docs_plugins.py
-   :language: python
-   :start-after: # -- start datasette_with_plugin_test --
-   :end-before: # -- end datasette_with_plugin_test --
+        assert outbound_request.url == "https://www.example.com/"

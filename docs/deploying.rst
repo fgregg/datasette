@@ -56,7 +56,7 @@ Create a file at ``/etc/systemd/system/datasette.service`` with the following co
 
 Add a random value for the ``DATASETTE_SECRET`` - this will be used to sign Datasette cookies such as the CSRF token cookie. You can generate a suitable value like so::
 
-    python3 -c 'import secrets; print(secrets.token_hex(32))'
+    $ python3 -c 'import secrets; print(secrets.token_hex(32))'
 
 This configuration will run Datasette against all database files contained in the ``/home/ubuntu/datasette-root`` directory. If that directory contains a ``metadata.yml`` (or ``.json``) file or a ``templates/`` or ``plugins/`` sub-directory those will automatically be loaded by Datasette - see :ref:`config_dir` for details.
 
@@ -74,30 +74,18 @@ Once the service has started you can confirm that Datasette is running on port 8
     curl 127.0.0.1:8000/-/versions.json
     # Should output JSON showing the installed version
 
-Datasette will not be accessible from outside the server because it is listening on ``127.0.0.1``. You can expose it by instead listening on ``0.0.0.0``, but a better way is to set up a proxy such as ``nginx`` - see :ref:`deploying_proxy`.
+Datasette will not be accessible from outside the server because it is listening on ``127.0.0.1``. You can expose it by instead listening on ``0.0.0.0``, but a better way is to set up a proxy such as ``nginx``.
 
-.. _deploying_openrc:
+Ubuntu offer `a tutorial on installing nginx <https://ubuntu.com/tutorials/install-and-configure-nginx#1-overview>`__. Once it is installed you can add configuration to proxy traffic through to Datasette that looks like this::
 
-Running Datasette using OpenRC
-==============================
-OpenRC is the service manager on non-systemd Linux distributions like `Alpine Linux <https://www.alpinelinux.org/>`__ and `Gentoo <https://www.gentoo.org/>`__.
+    server {
+        server_name mysubdomain.myhost.net;
 
-Create an init script at ``/etc/init.d/datasette`` with the following contents:
-
-.. code-block:: sh
-
-    #!/sbin/openrc-run
-
-    name="datasette"
-    command="datasette"
-    command_args="serve -h 0.0.0.0 /path/to/db.db"
-    command_background=true
-    pidfile="/run/${RC_SVCNAME}.pid"
-
-You then need to configure the service to run at boot and start it::
-
-    rc-update add datasette
-    rc-service datasette start
+        location / {
+            proxy_pass http://127.0.0.1:8000/;
+            proxy_set_header Host $host;
+        }
+    }
 
 .. _deploying_buildpacks:
 
@@ -199,8 +187,6 @@ Then add these directives to proxy traffic::
 
     ProxyPass /my-datasette/ http://127.0.0.1:8009/my-datasette/
     ProxyPreserveHost On
-
-A live demo of Datasette running behind Apache using this proxy setup can be seen at `datasette-apache-proxy-demo.datasette.io/prefix/ <https://datasette-apache-proxy-demo.datasette.io/prefix/>`__. The code for that demo can be found in the `demos/apache-proxy <https://github.com/simonw/datasette/tree/main/demos/apache-proxy>`__ directory.
 
 Using ``--uds`` you can use Unix domain sockets similar to the nginx example::
 

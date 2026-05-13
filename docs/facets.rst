@@ -3,29 +3,20 @@
 Facets
 ======
 
-Datasette facets can be used to add a faceted browse interface to any database table.
-With facets, tables are displayed along with a summary showing the most common values in specified columns.
-These values can be selected to further filter the table.
+Datasette facets can be used to add a faceted browse interface to any database table. With facets, tables are displayed along with a summary showing the most common values in specified columns. These values can be selected to further filter the table.
 
-Here's `an example <https://congress-legislators.datasettes.com/legislators/legislator_terms?_facet=type&_facet=party&_facet=state&_facet_size=10>`__:
-
-.. image:: https://raw.githubusercontent.com/simonw/datasette-screenshots/0.62/non-retina/faceting-details.png
-   :alt: Screenshot showing facets against a table of congressional legislators. Suggested facets include state_rank and start and end dates, and the displayed facets are state, party and type. Each facet lists values along with a count of rows for each value.
+.. image:: facets.png
 
 Facets can be specified in two ways: using query string parameters, or in ``metadata.json`` configuration for the table.
 
 Facets in query strings
 -----------------------
 
-To turn on faceting for specific columns on a Datasette table view, add one or more ``_facet=COLUMN`` parameters to the URL.
-For example, if you want to turn on facets for the ``city_id`` and ``state`` columns, construct a URL that looks like this::
+To turn on faceting for specific columns on a Datasette table view, add one or more ``_facet=COLUMN`` parameters to the URL. For example, if you want to turn on facets for the ``city_id`` and ``state`` columns, construct a URL that looks like this::
 
     /dbname/tablename?_facet=state&_facet=city_id
 
-This works for both the HTML interface and the ``.json`` view.
-When enabled, facets will cause a ``facet_results`` block to be added to the JSON output, looking something like this:
-
-.. code-block:: json
+This works for both the HTML interface and the ``.json`` view. When enabled, facets will cause a ``facet_results`` block to be added to the JSON output, looking something like this::
 
     {
       "state": {
@@ -93,21 +84,18 @@ When enabled, facets will cause a ``facet_results`` block to be added to the JSO
 
 If Datasette detects that a column is a foreign key, the ``"label"`` property will be automatically derived from the detected label column on the referenced table.
 
-The default number of facet results returned is 30, controlled by the :ref:`setting_default_facet_size` setting.
-You can increase this on an individual page by adding ``?_facet_size=100`` to the query string, up to a maximum of :ref:`setting_max_returned_rows` (which defaults to 1000).
+The default number of facet results returned is 30, controlled by the :ref:`setting_default_facet_size` setting. You can increase this on an individual page by adding ``?_facet_size=100`` to the query string, up to a maximum of :ref:`setting_max_returned_rows` (which defaults to 1000).
 
 .. _facets_metadata:
 
-Facets in configuration
+Facets in metadata.json
 -----------------------
 
-You can turn facets on by default for specific tables by adding a ``"facets"`` key to the table configuration in ``datasette.yaml``. See also the :ref:`table configuration reference <table_configuration_facets>` for a quick overview.
+You can turn facets on by default for specific tables by adding them to a ``"facets"`` key in a Datasette :ref:`metadata` file.
 
-Here's an example that turns on faceting by default for the ``qLegalStatus`` column in the ``Street_Tree_List`` table in the ``sf-trees`` database:
+Here's an example that turns on faceting by default for the ``qLegalStatus`` column in the ``Street_Tree_List`` table in the ``sf-trees`` database::
 
-.. [[[cog
-    from metadata_doc import config_example
-    config_example(cog, {
+    {
       "databases": {
         "sf-trees": {
           "tables": {
@@ -117,129 +105,9 @@ Here's an example that turns on faceting by default for the ``qLegalStatus`` col
           }
         }
       }
-    })
-.. ]]]
-
-.. tab:: datasette.yaml
-
-    .. code-block:: yaml
-
-        databases:
-          sf-trees:
-            tables:
-              Street_Tree_List:
-                facets:
-                - qLegalStatus
-
-
-.. tab:: datasette.json
-
-    .. code-block:: json
-
-        {
-          "databases": {
-            "sf-trees": {
-              "tables": {
-                "Street_Tree_List": {
-                  "facets": [
-                    "qLegalStatus"
-                  ]
-                }
-              }
-            }
-          }
-        }
-.. [[[end]]]
+    }
 
 Facets defined in this way will always be shown in the interface and returned in the API, regardless of the ``_facet`` arguments passed to the view.
-
-Facets defined in configuration will be displayed in the order they are listed. Any additional facets added via query string parameters (e.g. ``?_facet=column_name``) will appear after the configured facets, sorted by the number of unique values.
-
-You can specify :ref:`array <facet_by_json_array>` or :ref:`date <facet_by_date>` facets using JSON objects with a single key of ``array`` or ``date`` and a value specifying the column, like this:
-
-.. [[[cog
-    config_example(cog, {
-      "facets": [
-        {"array": "tags"},
-        {"date": "created"}
-      ]
-    })
-.. ]]]
-
-.. tab:: datasette.yaml
-
-    .. code-block:: yaml
-
-        facets:
-        - array: tags
-        - date: created
-
-
-.. tab:: datasette.json
-
-    .. code-block:: json
-
-        {
-          "facets": [
-            {
-              "array": "tags"
-            },
-            {
-              "date": "created"
-            }
-          ]
-        }
-.. [[[end]]]
-
-You can change the default facet size (the number of results shown for each facet) for a table using ``facet_size``:
-
-.. [[[cog
-    config_example(cog, {
-      "databases": {
-        "sf-trees": {
-          "tables": {
-            "Street_Tree_List": {
-              "facets": ["qLegalStatus"],
-              "facet_size": 10
-            }
-          }
-        }
-      }
-    })
-.. ]]]
-
-.. tab:: datasette.yaml
-
-    .. code-block:: yaml
-
-        databases:
-          sf-trees:
-            tables:
-              Street_Tree_List:
-                facets:
-                - qLegalStatus
-                facet_size: 10
-
-
-.. tab:: datasette.json
-
-    .. code-block:: json
-
-        {
-          "databases": {
-            "sf-trees": {
-              "tables": {
-                "Street_Tree_List": {
-                  "facets": [
-                    "qLegalStatus"
-                  ],
-                  "facet_size": 10
-                }
-              }
-            }
-          }
-        }
-.. [[[end]]]
 
 Suggested facets
 ----------------
@@ -253,26 +121,17 @@ For the currently filtered data are there any columns which, if applied as a fac
 * Will return less unique options than the total number of filtered rows
 * And the query used to evaluate this criteria can be completed in under 50ms
 
-That last point is particularly important: Datasette runs a query for every column that is displayed on a page, which could get expensive - so to avoid slow load times it sets a time limit of just 50ms for each of those queries.
-This means suggested facets are unlikely to appear for tables with millions of records in them.
+That last point is particularly important: Datasette runs a query for every column that is displayed on a page, which could get expensive - so to avoid slow load times it sets a time limit of just 50ms for each of those queries. This means suggested facets are unlikely to appear for tables with millions of records in them.
 
 Speeding up facets with indexes
 -------------------------------
 
-The performance of facets can be greatly improved by adding indexes on the columns you wish to facet by.
-Adding indexes can be performed using the ``sqlite3`` command-line utility. Here's how to add an index on the ``state`` column in a table called ``Food_Trucks``::
+The performance of facets can be greatly improved by adding indexes on the columns you wish to facet by. Adding indexes can be performed using the ``sqlite3`` command-line utility. Here's how to add an index on the ``state`` column in a table called ``Food_Trucks``::
 
-    sqlite3 mydatabase.db
-
-::
-
+    $ sqlite3 mydatabase.db
     SQLite version 3.19.3 2017-06-27 16:48:08
     Enter ".help" for usage hints.
     sqlite> CREATE INDEX Food_Trucks_state ON Food_Trucks("state");
-
-Or using the `sqlite-utils <https://sqlite-utils.datasette.io/en/stable/cli.html#creating-indexes>`__ command-line utility::
-
-    sqlite-utils create-index mydatabase.db Food_Trucks state
 
 .. _facet_by_json_array:
 
@@ -290,7 +149,6 @@ Example here: `latest.datasette.io/fixtures/facetable?_facet_array=tags <https:/
 Facet by date
 -------------
 
-If Datasette finds any columns that contain dates in the first 100 values, it will offer a faceting interface against the dates of those values.
-This works especially well against timestamp values such as ``2019-03-01 12:44:00``.
+If Datasette finds any columns that contain dates in the first 100 values, it will offer a faceting interface against the dates of those values. This works especially well against timestamp values such as ``2019-03-01 12:44:00``.
 
 Example here: `latest.datasette.io/fixtures/facetable?_facet_date=created <https://latest.datasette.io/fixtures/facetable?_facet_date=created>`__

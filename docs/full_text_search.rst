@@ -3,12 +3,9 @@
 Full-text search
 ================
 
-SQLite includes `a powerful mechanism for enabling full-text search <https://www.sqlite.org/fts3.html>`_ against SQLite records. Datasette can detect if a table has had full-text search configured for it in the underlying database and display a search interface for filtering that table.
+SQLite includes `a powerful mechanism for enabling full-text search <https://www.sqlite.org/fts3.html>`_ against SQLite records. Datasette can detect if a table has had full-text search configured for it in the underlying database and       display a search interface for filtering that table.
 
-Here's `an example search <https://register-of-members-interests.datasettes.com/regmem/items?_search=hamper&_sort_desc=date>`__:
-
-.. image:: https://raw.githubusercontent.com/simonw/datasette-screenshots/0.62/non-retina/regmem-search.png
-   :alt: Screenshot showing a search for hampers against a table full of items - 453 results are returned.
+.. image:: full_text_search.png
 
 Datasette automatically detects which tables have been configured for full-text search.
 
@@ -52,7 +49,7 @@ Configuring full-text search for a table or view
 
 If a table has a corresponding FTS table set up using the ``content=`` argument to ``CREATE VIRTUAL TABLE`` shown below, Datasette will detect it automatically and add a search interface to the table page for that table.
 
-You can also manually configure which table should be used for full-text search using query string parameters or table configuration in ``datasette.yaml`` (see :ref:`table_configuration_fts`). You can set the associated FTS table for a specific table and you can also set one for a view - if you do that, the page for that SQL view will offer a search option.
+You can also manually configure which table should be used for full-text search using query string parameters or :ref:`metadata`. You can set the associated FTS table for a specific table and you can also set one for a view - if you do that, the page for that SQL view will offer a search option.
 
 Use ``?_fts_table=x`` to over-ride the FTS table for a specific page. If the primary key was something other than ``rowid`` you can use ``?_fts_pk=col`` to set that as well. This is particularly useful for views, for example:
 
@@ -64,9 +61,9 @@ The ``"searchmode": "raw"`` property can be used to default the table to accepti
 
 Here is an example which enables full-text search (with SQLite advanced search operators) for a ``display_ads`` view which is defined against the ``ads`` table and hence needs to run FTS against the ``ads_fts`` table, using the ``id`` as the primary key:
 
-.. [[[cog
-    from metadata_doc import config_example
-    config_example(cog, {
+.. code-block:: json
+
+    {
         "databases": {
             "russian-ads": {
                 "tables": {
@@ -78,40 +75,7 @@ Here is an example which enables full-text search (with SQLite advanced search o
                 }
             }
         }
-    })
-.. ]]]
-
-.. tab:: datasette.yaml
-
-    .. code-block:: yaml
-
-        databases:
-          russian-ads:
-            tables:
-              display_ads:
-                fts_table: ads_fts
-                fts_pk: id
-                searchmode: raw
-
-
-.. tab:: datasette.json
-
-    .. code-block:: json
-
-        {
-          "databases": {
-            "russian-ads": {
-              "tables": {
-                "display_ads": {
-                  "fts_table": "ads_fts",
-                  "fts_pk": "id",
-                  "searchmode": "raw"
-                }
-              }
-            }
-          }
-        }
-.. [[[end]]]
+    }
 
 .. _full_text_search_custom_sql:
 
@@ -177,14 +141,14 @@ Configuring FTS using sqlite-utils
 
 Here's how to use ``sqlite-utils`` to enable full-text search for an ``items`` table across the ``name`` and ``description`` columns::
 
-    sqlite-utils enable-fts mydatabase.db items name description
+    $ sqlite-utils enable-fts mydatabase.db items name description
 
 Configuring FTS using csvs-to-sqlite
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 If your data starts out in CSV files, you can use Datasette's companion tool `csvs-to-sqlite <https://github.com/simonw/csvs-to-sqlite>`__ to convert that file into a SQLite database and enable full-text search on specific columns. For a file called ``items.csv`` where you want full-text search to operate against the ``name`` and ``description`` columns you would run the following::
 
-    csvs-to-sqlite items.csv items.db -f name -f description
+    $ csvs-to-sqlite items.csv items.db -f name -f description
 
 Configuring FTS by hand
 ~~~~~~~~~~~~~~~~~~~~~~~

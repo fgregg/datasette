@@ -4,1011 +4,6 @@
 Changelog
 =========
 
-.. _v1_0_a29:
-
-1.0a29 (2026-05-12)
--------------------
-
-- New ``TokenRestrictions.abbreviated(datasette)`` :ref:`utility method <TokenRestrictions>` for creating ``"_r"`` dictionaries. (:issue:`2695`)
-- Table headers and column options are now visible even if a table contains zero rows. (:issue:`2701`)
-- Fixed bug with display of column actions dialog on Mobile Safari. (:issue:`2708`)
-- Fixed bug where tests could crash with a segfault due to a race condition between ``Datasette.close()`` and ``Datasette.close()``. (:issue:`2709`)
-
-.. _v1_0_a28:
-
-1.0a28 (2026-04-16)
--------------------
-
-- Fixed a compatibility bug introduced in 1.0a27 where ``execute_write_fn()`` callbacks with a parameter name other than ``conn`` were seeing errors. (:issue:`2691`)
-- The :ref:`database.close() <database_close>` method now also shuts down the write connection for that database.
-- New :ref:`datasette.close() <datasette_close>` method for closing down all databases and resources associated with a Datasette instance. This is called automatically when the server shuts down. (:pr:`2693`)
-- Datasette now includes a pytest plugin which automatically calls ``datasette.close()`` on temporary instances created in function-scoped fixtures and during tests. See :ref:`testing_plugins_autoclose` for details. This helps avoid running out of file descriptors in plugin test suites that were written before the ``Database(is_temp_disk=True)`` feature introduced in Datasette 1.0a27. (:issue:`2692`)
-
-.. _v1_0_a27:
-
-1.0a27 (2026-04-15)
--------------------
-
-CSRF protection no longer uses CSRF tokens
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Datasette's token-based CSRF protection has been replaced with a mechanism based on the ``Sec-Fetch-Site`` and ``Origin`` request headers, which are `supported by all modern browsers <https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Sec-Fetch-Site>`__. See `this article by Filippo Valsorda <https://words.filippo.io/csrf/>`__ for more details of this approach. This removes the need for CSRF tokens in forms and AJAX requests. (:pr:`2689`)
-
-``RenameTableEvent`` when a table is renamed
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Renaming a table within Datasette will now fire a new :class:`~datasette.events.RenameTableEvent`, which plugins can use to react by updating ACL records or re-assigning comments or other associated records to the new table name. (:issue:`2681`)
-
-This event will not be fired if the table is renamed by SQL running in some other process.
-
-The ``datasette.track_event()`` method can now be called from within a write operation (using :ref:`database.execute_write() <database_execute_write>` and related methods) and the event will be fired after the write transaction has successfully committed. (:pr:`2682`)
-
-Other changes
-~~~~~~~~~~~~~
-
-- New :ref:`actor= parameter <internals_datasette_client_actor>` for ``datasette.client`` methods, allowing internal requests to be made as a specific actor. This is particularly useful for writing automated tests. (:pr:`2688`)
-- New ``Database(is_temp_disk=True)`` option, used internally for the internal database. This helps resolve intermittent database locked errors caused by the internal database being in-memory as opposed to on-disk. (:issue:`2683`) (:pr:`2684`)
-- The ``/<database>/<table>/-/upsert`` API (:ref:`docs <TableUpsertView>`) now rejects rows with ``null`` primary key values. (:issue:`1936`)
-- Improved example in the API explorer for the ``/-/upsert`` endpoint (:ref:`docs <TableUpsertView>`). (:issue:`1936`)
-- The ``/<database>.json`` endpoint now includes an ``"ok": true`` key, for consistency with other JSON API responses.
-- :ref:`call_with_supported_arguments() <internals_utils_call_with_supported_arguments>` is now documented as a supported public API. (:pr:`2678`)
-
-.. _v1_0_a26:
-
-1.0a26 (2026-03-18)
--------------------
-
-New ``column_types`` system
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Table columns can now have custom column types assigned to them, using the new ``column_types`` table configuration option or at runtime using a new UI and ``POST /<database>/<table>/-/set-column-type`` JSON API.
-
-Built-in column types include ``url``, ``email``, and ``json``, and plugins can register additional types using the new :ref:`register_column_types() <plugin_register_column_types>` plugin hook. (:issue:`2664`, :issue:`2671`)
-
-Column types can customize HTML rendering, validate values written through the insert, update, and upsert APIs, and transform values returned by the JSON API. They can optionally restrict themselves to specific SQLite column types using ``sqlite_types``. This feature also introduces a new :ref:`set-column-type <actions_set_column_type>` permission for assigning column types to a table. (:issue:`2672`)
-
-The :ref:`render_cell() <plugin_hook_render_cell>` plugin hook now receives a ``column_type`` argument containing the assigned type instance, and a column type's own ``render_cell()`` method takes priority over the plugin hook chain.
-
-The `datasette-files <https://github.com/datasette/datasette-files>`__ plugin will be the first to use this new feature.
-
-UI for selecting columns and their order
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Table and view pages now include a dialog for selecting and re-ordering visible columns. (:issue:`2661`)
-
-Other changes
-~~~~~~~~~~~~~
-
-- Fixed ``allowed_resources("view-query", actor)`` so actor-specific canned queries are returned correctly. Any plugin that defines a ``resources_sql()`` method on a ``Resource`` subclass needs to update to the new signature, see :ref:`the resources_sql() method<plugin_resources_sql>` documentation for details.
-- Column actions can now be accessed in mobile view via a new "Column actions" button. Previously they were not available on mobile because table headers are not displayed there. (:issue:`2669`, :issue:`2670`)
-- Row pages now render foreign key values as links to the referenced row. (:issue:`1592`)
-- The ``startup()`` plugin hook now fires after metadata and internal schema tables have been populated, so plugins can reliably inspect that state during startup. (:issue:`2666`)
-
-.. _v1_0_a25:
-
-1.0a25 (2026-02-25)
--------------------
-
-``write_wrapper()`` plugin hook for intercepting write operations
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-A new :ref:`write_wrapper() <plugin_hook_write_wrapper>` plugin hook allows plugins to intercept and wrap database write operations. (:pr:`2636`)
-
-Plugins implement the hook as a generator-based context manager:
-
-.. code-block:: python
-
-    @hookimpl
-    def write_wrapper(datasette, database, request):
-        def wrapper(conn):
-            # Setup code runs before the write
-            yield
-            # Cleanup code runs after the write
-
-        return wrapper
-
-``register_token_handler()`` plugin hook for custom API token backends
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-A new :ref:`register_token_handler() <plugin_hook_register_token_handler>` plugin hook allows plugins to provide custom token backends for API authentication. (:pr:`2650`)
-
-This includes a **backwards incompatible change**: the ``datasette.create_token()`` internal  method is now an ``async`` method. Consult the :ref:`upgrade guide <upgrade_guide_v1_a25>` for details on how to update your code.
-
-``render_cell()`` now receives a ``pks`` parameter
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The :ref:`render_cell() <plugin_hook_render_cell>` plugin hook now receives a ``pks`` parameter containing the list of primary key column names for the table being rendered. This avoids plugins needing to make redundant async calls to look up primary keys. (:pr:`2641`)
-
-Other changes
-~~~~~~~~~~~~~
-
-- Facets defined in metadata now preserve their configured order, instead of being sorted by result count. Request-based facets added via the ``_facet`` parameter are still sorted by result count and appear after metadata-defined facets. (:issue:`2647`)
-- Fixed ``--reload`` incorrectly interpreting the ``serve`` command as a file argument. Thanks, `Daniel Bates <https://github.com/danielalanbates>`__. (:pr:`2646`)
-
-.. _v1_0_a24:
-
-1.0a24 (2026-01-29)
--------------------
-
-``request.form()`` method for POST data and file uploads
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Datasette now includes a ``request.form()`` method for parsing form submissions, including handling file uploads. (:pr:`2626`)
-
-This supports both ``application/x-www-form-urlencoded`` and ``multipart/form-data`` content types, and uses a new streaming multipart parser that processes uploads without buffering entire request bodies in memory.
-
-.. code-block:: python
-
-    # Parse form fields (files are discarded by default)
-    form = await request.form()
-    username = form["username"]
-
-    # Parse form fields AND file uploads
-    form = await request.form(files=True)
-    uploaded = form["avatar"]
-    content = await uploaded.read()
-
-The returned :ref:`FormData <internals_formdata>` object provides dictionary-style access with support for multiple values per key via ``form.getlist("key")``. Uploaded files are represented as :ref:`UploadedFile <internals_uploadedfile>` objects with ``filename``, ``content_type``, ``size`` properties and async ``read()`` and ``seek()`` methods.
-
-Files smaller than 1MB are held in memory; larger files automatically spill to temporary files on disk. Configurable limits control maximum file size, request size, field counts and more.
-
-Several internal views (permissions debug, messages debug, create token) now use ``request.form()`` instead of ``request.post_vars()``.
-
-``request.post_vars()`` remains available for backwards compatibility but is no longer the recommended API for handling POST data.
-
-``render_cell`` and ``foreign_key_tables`` extras for the JSON API
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The table JSON API now supports ``?_extra=render_cell``, which returns the rendered HTML for each cell as produced by the :ref:`render_cell plugin hook <plugin_hook_render_cell>`. Only columns whose rendered output differs from the default are included. (:issue:`2619`)
-
-The row JSON API also gains ``?_extra=render_cell`` and ``?_extra=foreign_key_tables`` extras, bringing it closer to parity with the table API.
-
-The row JSON API now returns ``"ok": true`` in its response, for consistency with the table API.
-
-``uv run pytest`` with a ``dev=`` dependency group
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The recommended development environment for Datasette now uses `uv <https://github.com/astral-sh/uv>`__. You can now set up a development environment and run the test suite with just ``uv run pytest`` — no manual virtualenv or ``pip install`` step required. (:issue:`2611`)
-
-Other changes
-~~~~~~~~~~~~~
-
-- Plugins that raise ``datasette.utils.StartupError()`` during startup now display a clean error message instead of a full traceback. (:issue:`2624`)
-- Schema refreshes are now throttled to at most once per second, providing a small performance increase. (:issue:`2629`)
-- Minor performance improvement to ``remove_infinites`` — rows without infinity values now skip the list/dict reconstruction step. (:issue:`2629`)
-- Filter inputs and the search input no longer trigger unwanted zoom on iOS Safari. Thanks, `Daniel Olasubomi Sobowale <https://github.com/bowale-os>`__. (:issue:`2346`)
-- ``table_names()`` and ``get_all_foreign_keys()`` now return results in deterministic sorted order. (:issue:`2628`)
-- Switched linting to `ruff <https://github.com/astral-sh/ruff>`__ and fixed all lint errors. (:issue:`2630`)
-
-.. _v1_0_a23:
-
-1.0a23 (2025-12-02)
--------------------
-
-- Fix for bug where a stale database entry in ``internal.db`` could cause a 500 error on the homepage. (:issue:`2605`)
-- Cosmetic improvement to ``/-/actions`` page. (:issue:`2599`)
-
-.. _v1_0_a22:
-
-1.0a22 (2025-11-13)
--------------------
-
-- ``datasette serve --default-deny`` option for running Datasette configured to  :ref:`deny all permissions by default <authentication_default_deny>`. (:issue:`2592`)
-- ``datasette.is_client()`` method for detecting if code is :ref:`executing inside a datasette.client request <internals_datasette_is_client>`. (:issue:`2594`)
-- ``datasette.pm`` property can now be used to :ref:`register and unregister plugins in tests <testing_plugins_register_in_test>`. (:issue:`2595`)
-
-.. _v1_0_a21:
-
-1.0a21 (2025-11-05)
--------------------
-
-- Fixes an **open redirect** security issue: Datasette instances would redirect to ``example.com/foo/bar`` if you accessed the path ``//example.com/foo/bar``. Thanks to `James Jefferies <https://github.com/jamesjefferies>`__ for the fix. (:issue:`2429`)
-- Fixed ``datasette publish cloudrun`` to work with changes to the underlying Cloud Run architecture. (:issue:`2511`)
-- New ``datasette --get /path --headers`` option for inspecting the headers returned by a path. (:issue:`2578`)
-- New ``datasette.client.get(..., skip_permission_checks=True)`` parameter to bypass permission checks when making requests using the internal client. (:issue:`2583`)
-
-.. _v0_65_2:
-
-0.65.2 (2025-11-05)
--------------------
-
-- Fixes an **open redirect** security issue: Datasette instances would redirect to ``example.com/foo/bar`` if you accessed the path ``//example.com/foo/bar``. Thanks to `James Jefferies <https://github.com/jamesjefferies>`__ for the fix. (:issue:`2429`)
-- Upgraded for compatibility with Python 3.14.
-- Fixed ``datasette publish cloudrun`` to work with changes to the underlying Cloud Run architecture. (:issue:`2511`)
-- Minor upgrades to fix warnings, including ``pkg_resources`` deprecation.
-
-.. _v1_0_a20:
-
-1.0a20 (2025-11-03)
--------------------
-
-This alpha introduces a major breaking change prior to the 1.0 release of Datasette concerning how Datasette's permission system works.
-
-Permission system redesign
-~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Previously the permission system worked using ``datasette.permission_allowed()`` checks which consulted all available plugins in turn to determine whether a given actor was allowed to perform a given action on a given resource.
-
-This approach could become prohibitively expensive for large lists of items - for example to determine the list of tables that a user could view in a large Datasette instance each plugin implementation of that hook would be fired for every table.
-
-The new design uses SQL queries against Datasette's internal :ref:`catalog tables <internals_internal>` to derive the list of resources for which an actor has permission for a given action. This turns an N x M problem (N resources, M plugins) into a single SQL query.
-
-Plugins can use the new :ref:`plugin_hook_permission_resources_sql` hook to return SQL fragments which will be used as part of that query.
-
-Plugins that use any of the following features will need to be updated to work with this and following alphas (and Datasette 1.0 stable itself):
-
-- Checking permissions with ``datasette.permission_allowed()`` - this method has been replaced with :ref:`datasette.allowed() <datasette_allowed>`.
-- Implementing the ``permission_allowed()`` plugin hook - this hook has been removed in favor of :ref:`permission_resources_sql() <plugin_hook_permission_resources_sql>`.
-- Using ``register_permissions()`` to register permissions - this hook has been removed in favor of :ref:`register_actions() <plugin_register_actions>`.
-
-Consult the :ref:`v1.0a20 upgrade guide <upgrade_guide_v1_a20>` for further details on how to upgrade affected plugins.
-
-Plugins can now make use of two new internal methods to help resolve permission checks:
-
-- :ref:`datasette.allowed_resources() <datasette_allowed_resources>` returns a ``PaginatedResources`` object with a ``.resources`` list of ``Resource`` instances that an actor is allowed to access for a given action (and a ``.next`` token for pagination).
-- :ref:`datasette.allowed_resources_sql() <datasette_allowed_resources_sql>` returns the SQL and parameters that can be executed against the internal catalog tables to determine which resources an actor is allowed to access for a given action. This can be combined with further SQL to perform advanced custom filtering.
-
-Related changes:
-
-- The way ``datasette --root`` works has changed. Running Datasette with this flag now causes the root actor to pass *all* permission checks. (:issue:`2521`)
-
-- Permission debugging improvements:
-
-  - The ``/-/allowed`` endpoint shows resources the user is allowed to interact with for different actions.
-  - ``/-/rules`` shows the raw allow/deny rules that apply to different permission checks.
-  - ``/-/actions`` lists every available action.
-  - ``/-/check`` can be used to try out different permission checks for the current actor.
-
-Other changes
-~~~~~~~~~~~~~
-
-- The internal ``catalog_views`` table now tracks SQLite views alongside tables in the introspection database. (:issue:`2495`)
-- Hitting the ``/`` brings up a search interface for navigating to tables that the current user can view. A new ``/-/tables`` endpoint supports this functionality. (:issue:`2523`)
-- Datasette attempts to detect some configuration errors on startup.
-- Datasette now supports Python 3.14 and no longer tests against Python 3.9.
-
-.. _v1_0_a19:
-
-1.0a19 (2025-04-21)
--------------------
-
-- Tiny cosmetic bug fix for mobile display of table rows. (:issue:`2479`)
-
-.. _v1_0_a18:
-
-1.0a18 (2025-04-16)
--------------------
-
-- Fix for incorrect foreign key references in the internal database schema. (:issue:`2466`)
-- The ``prepare_connection()`` hook no longer runs for the internal database. (:issue:`2468`)
-- Fixed bug where ``link:`` HTTP headers used invalid syntax. (:issue:`2470`)
-- No longer tested against Python 3.8. Now tests against Python 3.13.
-- FTS tables are now hidden by default if they correspond to a content table. (:issue:`2477`)
-- Fixed bug with foreign key links to rows in databases with filenames containing a special character. Thanks, `Jack Stratton <https://github.com/phroa>`__. (:pr:`2476`)
-
-.. _v1_0_a17:
-
-1.0a17 (2025-02-06)
--------------------
-
-- ``DATASETTE_SSL_KEYFILE`` and ``DATASETTE_SSL_CERTFILE`` environment variables as alternatives to ``--ssl-keyfile`` and ``--ssl-certfile``. Thanks, Alex Garcia. (:issue:`2422`)
-- ``SQLITE_EXTENSIONS`` environment variable has been renamed to ``DATASETTE_LOAD_EXTENSION``. (:issue:`2424`)
-- ``datasette serve`` environment variables are now :ref:`documented here <cli_datasette_serve_env>`.
-- The :ref:`plugin_hook_register_magic_parameters` plugin hook can now register async functions. (:issue:`2441`)
-- Datasette is now tested against Python 3.13.
-- Breadcrumbs on database and table pages now include a consistent self-link for resetting query string parameters. (:issue:`2454`)
-- Fixed issue where Datasette could crash on ``metadata.json`` with nested values. (:issue:`2455`)
-- New internal methods ``datasette.set_actor_cookie()`` and ``datasette.delete_actor_cookie()``, :ref:`described here <authentication_ds_actor>`. (:issue:`1690`)
-- ``/-/permissions`` page now shows a list of all permissions registered by plugins. (:issue:`1943`)
-- If a table has a single unique text column Datasette now detects that as the foreign key label for that table. (:issue:`2458`)
-- The ``/-/permissions`` page now includes options for filtering or exclude permission checks recorded against the current user. (:issue:`2460`)
-- Fixed a bug where replacing a database with a new one with the same name did not pick up the new database correctly. (:issue:`2465`)
-
-.. _v0_65_1:
-
-0.65.1 (2024-11-28)
--------------------
-
-- Fixed bug with upgraded HTTPX 0.28.0 dependency. (:issue:`2443`)
-
-.. _v0_65:
-
-0.65 (2024-10-07)
------------------
-
-- Upgrade for compatibility with Python 3.13 (by vendoring Pint dependency). (:issue:`2434`)
-- Dropped support for Python 3.8.
-
-.. _v1_0_a16:
-
-1.0a16 (2024-09-05)
--------------------
-
-This release focuses on performance, in particular against large tables, and introduces some minor breaking changes for CSS styling in Datasette plugins.
-
-- Removed the unit conversions feature and its dependency, Pint. This means Datasette is now compatible with the upcoming Python 3.13. (:issue:`2400`, :issue:`2320`)
-- The ``datasette --pdb`` option now uses the `ipdb <https://github.com/gotcha/ipdb>`__ debugger if it is installed. You can install it using ``datasette install ipdb``. Thanks, `Tiago Ilieve <https://github.com/myhro>`__. (:pr:`2342`)
-- Fixed a confusing error that occurred if ``metadata.json`` contained nested objects. (:issue:`2403`)
-- Fixed a bug with ``?_trace=1`` where it returned a blank page if the response was larger than 256KB. (:issue:`2404`)
-- Tracing mechanism now also displays SQL queries that returned errors or ran out of time. `datasette-pretty-traces 0.5 <https://github.com/simonw/datasette-pretty-traces/releases/tag/0.5>`__ includes support for displaying this new type of trace. (:issue:`2405`)
-- Fixed a text spacing with table descriptions on the homepage. (:issue:`2399`)
-- Performance improvements for large tables:
-    - Suggested facets now only consider the first 1000 rows. (:issue:`2406`)
-    - Improved performance of date facet suggestion against large tables. (:issue:`2407`)
-    - Row counts stop at 10,000 rows when listing tables. (:issue:`2398`)
-    - On table page the count stops at 10,000 rows too, with a "count all" button to execute the full count. (:issue:`2408`)
-- New ``.dicts()`` internal method on :ref:`database_results` that returns a list of dictionaries representing the results from a SQL query: (:issue:`2414`)
-
-  .. code-block:: bash
-
-        rows = (await db.execute("select * from t")).dicts()
-
-- Default Datasette core CSS that styles inputs and buttons now requires a class of ``"core"`` on the element or a containing element, for example ``<form class="core">``. (:issue:`2415`)
-- Similarly, default table styles now only apply to ``<table class="rows-and-columns">``. (:issue:`2420`)
-
-.. _v1_0_a15:
-
-1.0a15 (2024-08-15)
--------------------
-
-- Datasette now defaults to hiding SQLite "shadow" tables, as seen in extensions such as SQLite FTS and `sqlite-vec <https://github.com/asg017/sqlite-vec>`__. Virtual tables that it makes sense to display, such as FTS core tables, are no longer hidden. Thanks, `Alex Garcia <https://github.com/asg017>`__. (:issue:`2296`)
-- Fixed bug where running Datasette with one or more ``-s/--setting`` options could over-ride settings that were present in ``datasette.yml``. (:issue:`2389`)
-- The Datasette homepage is now duplicated at ``/-/``, using the default ``index.html`` template. This ensures that the information on that page is still accessible even if the Datasette homepage has been customized using a custom ``index.html`` template, for example on sites like `datasette.io <https://datasette.io/>`__. (:issue:`2393`)
-- Failed CSRF checks now display a more user-friendly error page. (:issue:`2390`)
-- Fixed a bug where the ``json1`` extension was not correctly detected on the ``/-/versions`` page. Thanks, `Seb Bacon <https://github.com/sebbacon>`__. (:issue:`2326`)
-- Fixed a bug where the Datasette write API did not correctly accept ``Content-Type: application/json; charset=utf-8``. (:issue:`2384`)
-- Fixed a bug where Datasette would fail to start if ``metadata.yml`` contained a ``queries`` block. (:pr:`2386`)
-
-.. _v1_0_a14:
-
-1.0a14 (2024-08-05)
--------------------
-
-This alpha introduces significant changes to Datasette's :ref:`metadata` system, some of which represent breaking changes in advance of the full 1.0 release. The new :ref:`upgrade_guide` document provides detailed coverage of those breaking changes and how they affect plugin authors and Datasette API consumers.
-
-- The ``/databasename?sql=`` interface and JSON API for executing arbitrary SQL queries can now be found at ``/databasename/-/query?sql=``. Requests with a ``?sql=`` parameter to the old endpoints will be redirected. Thanks, `Alex Garcia <https://github.com/asg017>`__. (:issue:`2360`)
-- Metadata about tables, databases, instances and columns is now stored in :ref:`internals_internal`. Thanks, Alex Garcia. (:issue:`2341`)
-- Database write connections now execute using the ``IMMEDIATE`` isolation level for SQLite. This should help avoid a rare ``SQLITE_BUSY`` error that could occur when a transaction upgraded to a write mid-flight. (:issue:`2358`)
-- Fix for a bug where canned queries with named parameters could fail against SQLite 3.46. (:issue:`2353`)
-- Datasette now serves ``E-Tag`` headers for static files. Thanks, `Agustin Bacigalup <https://github.com/redraw>`__. (:pr:`2306`)
-- Dropdown menus now use a ``z-index`` that should avoid them being hidden by plugins. (:issue:`2311`)
-- Incorrect table and row names are no longer reflected back on the resulting 404 page. (:issue:`2359`)
-- Improved documentation for async usage of the :ref:`plugin_hook_track_event` hook. (:issue:`2319`)
-- Fixed some HTTPX deprecation warnings. (:issue:`2307`)
-- Datasette now serves a ``<html lang="en">`` attribute. Thanks, `Charles Nepote <https://github.com/CharlesNepote>`__. (:issue:`2348`)
-- Datasette's automated tests now run against the maximum and minimum supported versions of SQLite: 3.25 (from September 2018) and 3.46 (from May 2024). Thanks, Alex Garcia. (:pr:`2352`)
-- Fixed an issue where clicking twice on the URL output by ``datasette --root`` produced a confusing error. (:issue:`2375`)
-
-.. _v0_64_8:
-
-0.64.8 (2024-06-21)
--------------------
-
-- Security improvement: 404 pages used to reflect content from the URL path, which could be used to display misleading information to Datasette users. 404 errors no longer display additional information from the URL. (:issue:`2359`)
-- Backported a better fix for correctly extracting named parameters from canned query SQL against SQLite 3.46.0. (:issue:`2353`)
-
-.. _v0_64_7:
-
-0.64.7 (2024-06-12)
--------------------
-
-- Fixed a bug where canned queries with named parameters threw an error when run against SQLite 3.46.0. (:issue:`2353`)
-
-.. _v1_0_a13:
-
-1.0a13 (2024-03-12)
--------------------
-
-Each of the key concepts in Datasette now has an :ref:`actions menu <plugin_actions>`, which plugins can use to add additional functionality targeting that entity.
-
-- Plugin hook: :ref:`view_actions() <plugin_hook_view_actions>` for actions that can be applied to a SQL view. (:issue:`2297`)
-- Plugin hook: :ref:`homepage_actions() <plugin_hook_homepage_actions>` for actions that apply to the instance homepage. (:issue:`2298`)
-- Plugin hook: :ref:`row_actions() <plugin_hook_row_actions>` for actions that apply to the row page. (:issue:`2299`)
-- Action menu items for all of the ``*_actions()`` plugin hooks can now return an optional ``"description"`` key, which will be displayed in the menu below the action label. (:issue:`2294`)
-- :ref:`Plugin hooks <plugin_hooks>` documentation page is now organized with additional headings. (:issue:`2300`)
-- Improved the display of action buttons on pages that also display metadata. (:issue:`2286`)
-- The header and footer of the page now uses a subtle gradient effect, and options in the navigation menu are better visually defined. (:issue:`2302`)
-- Table names that start with an underscore now default to hidden. (:issue:`2104`)
-- ``pragma_table_list`` has been added to the allow-list of SQLite pragma functions supported by Datasette. ``select * from pragma_table_list()`` is no longer blocked. (`#2104 <https://github.com/simonw/datasette/issues/2104#issuecomment-1982352475>`__)
-
-.. _v1_0_a12:
-
-1.0a12 (2024-02-29)
--------------------
-
-- New :ref:`query_actions() <plugin_hook_query_actions>` plugin hook, similar to :ref:`table_actions() <plugin_hook_table_actions>` and :ref:`database_actions() <plugin_hook_database_actions>`. Can be used to add a menu of actions to the canned query or arbitrary SQL query page. (:issue:`2283`)
-- New design for the button that opens the query, table and database actions menu. (:issue:`2281`)
-- "does not contain" table filter for finding rows that do not contain a string. (:issue:`2287`)
-- Fixed a bug in the :ref:`javascript_plugins_makeColumnActions` JavaScript plugin mechanism where the column action menu was not fully reset in between each interaction. (:issue:`2289`)
-
-.. _v1_0_a11:
-
-1.0a11 (2024-02-19)
--------------------
-
-- The ``"replace": true`` argument to the ``/db/table/-/insert`` API now requires the actor to have the ``update-row`` permission. (:issue:`2279`)
-- Fixed some UI bugs in the interactive permissions debugging tool. (:issue:`2278`)
-- The column action menu now aligns better with the cog icon, and positions itself taking into account the width of the browser window. (:issue:`2263`)
-
-.. _v1_0_a10:
-
-1.0a10 (2024-02-17)
--------------------
-
-The only changes in this alpha correspond to the way Datasette handles database transactions. (:issue:`2277`)
-
-- The :ref:`database.execute_write_fn() <database_execute_write_fn>` method has a new ``transaction=True`` parameter. This defaults to ``True`` which means all functions executed using this method are now automatically wrapped in a transaction - previously the functions needed to roll transaction handling on their own, and many did not.
-- Pass ``transaction=False`` to ``execute_write_fn()`` if you want to manually handle transactions in your function.
-- Several internal Datasette features, including parts of the :ref:`JSON write API <json_api_write>`, had been failing to wrap their operations in a transaction. This has been fixed by the new ``transaction=True`` default.
-
-.. _v1_0_a9:
-
-1.0a9 (2024-02-16)
-------------------
-
-This alpha release adds basic alter table support to the Datasette Write API and fixes a permissions bug relating to the ``/upsert`` API endpoint.
-
-Alter table support for create, insert, upsert and update
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The :ref:`JSON write API <json_api_write>` can now be used to apply simple alter table schema changes, provided the acting actor has the new :ref:`actions_alter_table` permission. (:issue:`2101`)
-
-The only alter operation supported so far is adding new columns to an existing table.
-
-* The :ref:`/db/-/create <TableCreateView>` API now adds new columns during large operations to create a table based on incoming example ``"rows"``, in the case where one of the later rows includes columns that were not present in the earlier batches. This requires the ``create-table`` but not the ``alter-table`` permission.
-* When ``/db/-/create`` is called with rows in a situation where the table may have been already created, an ``"alter": true`` key can be included to indicate that any missing columns from the new rows should be added to the table. This requires the ``alter-table`` permission.
-* :ref:`/db/table/-/insert <TableInsertView>` and :ref:`/db/table/-/upsert <TableUpsertView>` and :ref:`/db/table/row-pks/-/update <RowUpdateView>` all now also accept ``"alter": true``, depending on the ``alter-table`` permission.
-
-Operations that alter a table now fire the new :ref:`alter-table event <events>`.
-
-Permissions fix for the upsert API
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The :ref:`/database/table/-/upsert API <TableUpsertView>` had a minor permissions bug, only affecting Datasette instances that had configured the ``insert-row`` and ``update-row`` permissions to apply to a specific table rather than the database or instance as a whole. Full details in issue :issue:`2262`.
-
-To avoid similar mistakes in the future the ``datasette.permission_allowed()`` method now specifies ``default=`` as a keyword-only argument.
-
-Permission checks now consider opinions from every plugin
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The ``datasette.permission_allowed()`` method previously consulted every plugin that implemented the ``permission_allowed()`` plugin hook and obeyed the opinion of the last plugin to return a value. (:issue:`2275`)
-
-Datasette now consults every plugin and checks to see if any of them returned ``False`` (the veto rule), and if none of them did, it then checks to see if any of them returned ``True``.
-
-This is explained at length in the new documentation covering :ref:`authentication_permissions_explained`.
-
-Other changes
-~~~~~~~~~~~~~
-
-- The new :ref:`DATASETTE_TRACE_PLUGINS=1 environment variable <writing_plugins_tracing>` turns on detailed trace output for every executed plugin hook, useful for debugging and understanding how the plugin system works at a low level. (:issue:`2274`)
-- Datasette on Python 3.9 or above marks its non-cryptographic uses of the MD5 hash function as ``usedforsecurity=False``, for compatibility with FIPS systems. (:issue:`2270`)
-- SQL relating to :ref:`internals_internal` now executes inside a transaction, avoiding a potential database locked error. (:issue:`2273`)
-- The ``/-/threads`` debug page now identifies the database in the name associated with each dedicated write thread. (:issue:`2265`)
-- The ``/db/-/create`` API now fires a ``insert-rows`` event if rows were inserted after the table was created. (:issue:`2260`)
-
-.. _v1_0_a8:
-
-1.0a8 (2024-02-07)
-------------------
-
-This alpha release continues the migration of Datasette's configuration from ``metadata.yaml`` to the new ``datasette.yaml`` configuration file, introduces a new system for JavaScript plugins and adds several new plugin hooks.
-
-See `Datasette 1.0a8: JavaScript plugins, new plugin hooks and plugin configuration in datasette.yaml <https://simonwillison.net/2024/Feb/7/datasette-1a8/>`__ for an annotated version of these release notes.
-
-Configuration
-~~~~~~~~~~~~~
-
-- Plugin configuration now lives in the :ref:`datasette.yaml configuration file <configuration>`, passed to Datasette using the ``-c/--config`` option. Thanks, Alex Garcia. (:issue:`2093`)
-
-  .. code-block:: bash
-
-        datasette -c datasette.yaml
-
-  Where ``datasette.yaml`` contains configuration that looks like this:
-
-  .. code-block:: yaml
-
-        plugins:
-          datasette-cluster-map:
-            latitude_column: xlat
-            longitude_column: xlon
-
-  Previously plugins were configured in ``metadata.yaml``, which was confusing as plugin settings were unrelated to database and table metadata.
-- The ``-s/--setting`` option can now be used to set plugin configuration as well. See :ref:`configuration_cli` for details. (:issue:`2252`)
-
-  The above YAML configuration example using ``-s/--setting`` looks like this:
-
-  .. code-block:: bash
-
-        datasette mydatabase.db \
-          -s plugins.datasette-cluster-map.latitude_column xlat \
-          -s plugins.datasette-cluster-map.longitude_column xlon
-
-- The new ``/-/config`` page shows the current instance configuration, after redacting keys that could contain sensitive data such as API keys or passwords. (:issue:`2254`)
-
-- Existing Datasette installations may already have configuration set in ``metadata.yaml`` that should be migrated to ``datasette.yaml``. To avoid breaking these installations, Datasette will silently treat table configuration, plugin configuration and allow blocks in metadata as if they had been specified in configuration instead. (:issue:`2247`) (:issue:`2248`) (:issue:`2249`)
-
-Note that the ``datasette publish`` command has not yet been updated to accept a ``datasette.yaml`` configuration file. This will be addressed in :issue:`2195` but for the moment you can include those settings in ``metadata.yaml`` instead.
-
-JavaScript plugins
-~~~~~~~~~~~~~~~~~~
-
-Datasette now includes a :ref:`JavaScript plugins mechanism <javascript_plugins>`, allowing JavaScript to customize Datasette in a way that can collaborate with other plugins.
-
-This provides two initial hooks, with more to come in the future:
-
-- :ref:`makeAboveTablePanelConfigs() <javascript_plugins_makeAboveTablePanelConfigs>` can add additional panels to the top of the table page.
-- :ref:`makeColumnActions() <javascript_plugins_makeColumnActions>` can add additional actions to the column menu.
-
-Thanks `Cameron Yick <https://github.com/hydrosquall>`__ for contributing this feature. (:pr:`2052`)
-
-Plugin hooks
-~~~~~~~~~~~~
-
-- New :ref:`plugin_hook_jinja2_environment_from_request` plugin hook, which can be used to customize the current Jinja environment based on the incoming request. This can be used to modify the template lookup path based on the incoming request hostname, among other things. (:issue:`2225`)
-- New :ref:`family of template slot plugin hooks <plugin_hook_slots>`: ``top_homepage``, ``top_database``, ``top_table``, ``top_row``, ``top_query``, ``top_canned_query``. Plugins can use these to provide additional HTML to be injected at the top of the corresponding pages. (:issue:`1191`)
-- New :ref:`track_event() mechanism <plugin_event_tracking>` for plugins to emit and receive events when certain events occur within Datasette. (:issue:`2240`)
-    - Plugins can register additional event classes using :ref:`plugin_hook_register_events`.
-    - They can then trigger those events with the :ref:`datasette.track_event(event) <datasette_track_event>` internal method.
-    - Plugins can subscribe to notifications of events using the :ref:`plugin_hook_track_event` plugin hook.
-    - Datasette core now emits ``login``, ``logout``, ``create-token``, ``create-table``, ``drop-table``, ``insert-rows``, ``upsert-rows``, ``update-row``, ``delete-row`` events, :ref:`documented here <events>`.
-- New internal function for plugin authors: :ref:`database_execute_isolated_fn`, for creating a new SQLite connection, executing code and then closing that connection, all while preventing other code from writing to that particular database. This connection will not have the :ref:`prepare_connection() <plugin_hook_prepare_connection>` plugin hook executed against it, allowing plugins to perform actions that might otherwise be blocked by existing connection configuration. (:issue:`2218`)
-
-Documentation
-~~~~~~~~~~~~~
-
-- Documentation describing :ref:`how to write tests that use signed actor cookies <testing_datasette_client>` using ``datasette.client.actor_cookie()``. (:issue:`1830`)
-- Documentation on how to :ref:`register a plugin for the duration of a test <testing_plugins_register_in_test>`. (:issue:`2234`)
-- The :ref:`configuration documentation <configuration>` now shows examples of both YAML and JSON for each setting.
-
-Minor fixes
-~~~~~~~~~~~
-
-- Datasette no longer attempts to run SQL queries in parallel when rendering a table page, as this was leading to some rare crashing bugs. (:issue:`2189`)
-- Fixed warning: ``DeprecationWarning: pkg_resources is deprecated as an API`` (:issue:`2057`)
-- Fixed bug where ``?_extra=columns`` parameter returned an incorrectly shaped response. (:issue:`2230`)
-
-.. _v0_64_6:
-
-0.64.6 (2023-12-22)
--------------------
-
-- Fixed a bug where CSV export with expanded labels could fail if a foreign key reference did not correctly resolve. (:issue:`2214`)
-
-.. _v0_64_5:
-
-0.64.5 (2023-10-08)
--------------------
-
-- Dropped dependency on ``click-default-group-wheel``, which could cause a dependency conflict. (:issue:`2197`)
-
-.. _v1_0_a7:
-
-1.0a7 (2023-09-21)
-------------------
-
-- Fix for a crashing bug caused by viewing the table page for a named in-memory database. (:issue:`2189`)
-
-.. _v0_64_4:
-
-0.64.4 (2023-09-21)
--------------------
-
-- Fix for a crashing bug caused by viewing the table page for a named in-memory database. (:issue:`2189`)
-
-.. _v1_0_a6:
-
-1.0a6 (2023-09-07)
-------------------
-
-- New plugin hook: :ref:`plugin_hook_actors_from_ids` and an internal method to accompany it, :ref:`datasette_actors_from_ids`. This mechanism is intended to be used by plugins that may need to display the actor who was responsible for something managed by that plugin: they can now resolve the recorded IDs of actors into the full actor objects. (:issue:`2181`)
-- ``DATASETTE_LOAD_PLUGINS`` environment variable for :ref:`controlling which plugins <plugins_datasette_load_plugins>` are loaded by Datasette. (:issue:`2164`)
-- Datasette now checks if the user has permission to view a table linked to by a foreign key before turning that foreign key into a clickable link. (:issue:`2178`)
-- The ``execute-sql`` permission now implies that the actor can also view the database and instance. (:issue:`2169`)
-- Documentation describing a pattern for building plugins that themselves :ref:`define further hooks <writing_plugins_extra_hooks>` for other plugins. (:issue:`1765`)
-- Datasette is now tested against the Python 3.12 preview. (:pr:`2175`)
-
-.. _v1_0_a5:
-
-1.0a5 (2023-08-29)
-------------------
-
-- When restrictions are applied to :ref:`API tokens <CreateTokenView>`, those restrictions now behave slightly differently: applying the ``view-table`` restriction will imply the ability to ``view-database`` for the database containing that table, and both ``view-table`` and ``view-database`` will imply ``view-instance``. Previously you needed to create a token with restrictions that explicitly listed ``view-instance`` and ``view-database`` and ``view-table`` in order to view a table without getting a permission denied error. (:issue:`2102`)
-- New ``datasette.yaml`` (or ``.json``) configuration file, which can be specified using ``datasette -c path-to-file``. The goal here to consolidate settings, plugin configuration, permissions, canned queries, and other Datasette configuration into a single single file, separate from ``metadata.yaml``. The legacy ``settings.json`` config file used for :ref:`config_dir` has been removed, and ``datasette.yaml`` has a ``"settings"`` section where the same settings key/value pairs can be included. In the next future alpha release, more configuration such as plugins/permissions/canned queries will be moved to the ``datasette.yaml`` file. See :issue:`2093` for more details. Thanks, Alex Garcia.
-- The ``-s/--setting`` option can now take dotted paths to nested settings. These will then be used to set or over-ride the same options as are present in the new configuration file. (:issue:`2156`)
-- New ``--actor '{"id": "json-goes-here"}'`` option for use with ``datasette --get`` to treat the simulated request as being made by a specific actor, see :ref:`cli_datasette_get`. (:issue:`2153`)
-- The Datasette ``_internal`` database has had some changes. It no longer shows up in the ``datasette.databases`` list by default, and is now instead available to plugins using the ``datasette.get_internal_database()``. Plugins are invited to use this as a private database to store configuration and settings and secrets that should not be made visible through the default Datasette interface. Users can pass the new  ``--internal internal.db`` option to persist that internal database to disk. Thanks, Alex Garcia. (:issue:`2157`).
-
-.. _v1_0_a4:
-
-1.0a4 (2023-08-21)
-------------------
-
-This alpha fixes a security issue with the ``/-/api`` API explorer. On authenticated Datasette instances (instances protected using plugins such as `datasette-auth-passwords <https://datasette.io/plugins/datasette-auth-passwords>`__) the API explorer interface could reveal the names of databases and tables within the protected instance. The data stored in those tables was not revealed.
-
-For more information and workarounds, read `the security advisory <https://github.com/simonw/datasette/security/advisories/GHSA-7ch3-7pp7-7cpq>`__. The issue has been present in every previous alpha version of Datasette 1.0: versions 1.0a0, 1.0a1, 1.0a2 and 1.0a3.
-
-Also in this alpha:
-
-- The new ``datasette plugins --requirements`` option outputs a list of currently installed plugins in Python ``requirements.txt`` format, useful for duplicating that installation elsewhere. (:issue:`2133`)
-- :ref:`canned_queries_writable` can now define a ``on_success_message_sql`` field in their configuration, containing a SQL query that should be executed upon successful completion of the write operation in order to generate a message to be shown to the user. (:issue:`2138`)
-- The automatically generated border color for a database is now shown in more places around the application. (:issue:`2119`)
-- Every instance of example shell script code in the documentation should now include a working copy button, free from additional syntax. (:issue:`2140`)
-
-.. _v1_0_a3:
-
-1.0a3 (2023-08-09)
-------------------
-
-This alpha release previews the updated design for Datasette's default JSON API. (:issue:`782`)
-
-The new :ref:`default JSON representation <json_api_default>` for both table pages (``/dbname/table.json``) and arbitrary SQL queries (``/dbname.json?sql=...``) is now shaped like this:
-
-.. code-block:: json
-
-    {
-      "ok": true,
-      "rows": [
-        {
-          "id": 3,
-          "name": "Detroit"
-        },
-        {
-          "id": 2,
-          "name": "Los Angeles"
-        },
-        {
-          "id": 4,
-          "name": "Memnonia"
-        },
-        {
-          "id": 1,
-          "name": "San Francisco"
-        }
-      ],
-      "truncated": false
-    }
-
-Tables will include an additional ``"next"`` key for pagination, which can be passed to ``?_next=`` to fetch the next page of results.
-
-The various ``?_shape=`` options continue to work as before - see :ref:`json_api_shapes` for details.
-
-A new ``?_extra=`` mechanism is available for tables, but has not yet been stabilized or documented. Details on that are available in :issue:`262`.
-
-Smaller changes
-~~~~~~~~~~~~~~~
-
-- Datasette documentation now shows YAML examples for :ref:`metadata` by default, with a tab interface for switching to JSON. (:issue:`1153`)
-- :ref:`plugin_register_output_renderer` plugins now have access to ``error`` and ``truncated`` arguments, allowing them to display error messages and take into account truncated results. (:issue:`2130`)
-- ``render_cell()`` plugin hook now also supports an optional ``request`` argument. (:issue:`2007`)
-- New ``Justfile`` to support development workflows for Datasette using `Just <https://github.com/casey/just>`__.
-- ``datasette.render_template()`` can now accepts a ``datasette.views.Context`` subclass as an alternative to a dictionary. (:issue:`2127`)
-- ``datasette install -e path`` option for editable installations, useful while developing plugins. (:issue:`2106`)
-- When started with the ``--cors`` option Datasette now serves an ``Access-Control-Max-Age: 3600`` header, ensuring CORS OPTIONS requests are repeated no more than once an hour. (:issue:`2079`)
-- Fixed a bug where the ``_internal`` database could display ``None`` instead of ``null`` for in-memory databases. (:issue:`1970`)
-
-.. _v0_64_2:
-
-0.64.2 (2023-03-08)
--------------------
-
-- Fixed a bug with ``datasette publish cloudrun`` where deploys all used the same Docker image tag. This was mostly inconsequential as the service is deployed as soon as the image has been pushed to the registry, but could result in the incorrect image being deployed if two different deploys for two separate services ran at exactly the same time. (:issue:`2036`)
-
-.. _v0_64_1:
-
-0.64.1 (2023-01-11)
--------------------
-
-- Documentation now links to a current source of information for installing Python 3. (:issue:`1987`)
-- Incorrectly calling the Datasette constructor using ``Datasette("path/to/data.db")`` instead of ``Datasette(["path/to/data.db"])`` now returns a useful error message. (:issue:`1985`)
-
-.. _v0_64:
-
-0.64 (2023-01-09)
------------------
-
-- Datasette now **strongly recommends against allowing arbitrary SQL queries if you are using SpatiaLite**. SpatiaLite includes SQL functions that could cause the Datasette server to crash. See :ref:`spatialite` for more details.
-- New :ref:`setting_default_allow_sql` setting, providing an easier way to disable all arbitrary SQL execution by end users: ``datasette --setting default_allow_sql off``. See also :ref:`authentication_permissions_execute_sql`. (:issue:`1409`)
-- `Building a location to time zone API with SpatiaLite <https://datasette.io/tutorials/spatialite>`__ is a new Datasette tutorial showing how to safely use SpatiaLite to create a location to time zone API.
-- New documentation about :ref:`how to debug problems loading SQLite extensions <installation_extensions>`. The error message shown when an extension cannot be loaded has also been improved. (:issue:`1979`)
-- Fixed an accessibility issue: the ``<select>`` elements in the table filter form now show an outline when they are currently focused. (:issue:`1771`)
-
-.. _v0_63_3:
-
-0.63.3 (2022-12-17)
--------------------
-
-- Fixed a bug where ``datasette --root``, when running in Docker, would only output the URL to sign in root when the server shut down, not when it started up. (:issue:`1958`)
-- You no longer need to ensure ``await datasette.invoke_startup()`` has been called in order for Datasette to start correctly serving requests - this is now handled automatically the first time the server receives a request. This fixes a bug experienced when Datasette is served directly by an ASGI application server such as Uvicorn or Gunicorn. It also fixes a bug with the `datasette-gunicorn <https://datasette.io/plugins/datasette-gunicorn>`__ plugin. (:issue:`1955`)
-
-.. _v1_0_a2:
-
-1.0a2 (2022-12-14)
-------------------
-
-The third Datasette 1.0 alpha release adds upsert support to the JSON API, plus the ability to specify finely grained permissions when creating an API token.
-
-See `Datasette 1.0a2: Upserts and finely grained permissions <https://simonwillison.net/2022/Dec/15/datasette-1a2/>`__ for an extended, annotated version of these release notes.
-
-- New ``/db/table/-/upsert`` API, :ref:`documented here <TableUpsertView>`. upsert is an update-or-insert: existing rows will have specified keys updated, but if no row matches the incoming primary key a brand new row will be inserted instead. (:issue:`1878`)
-- New ``register_permissions()`` plugin hook. Plugins can now register named permissions, which will then be listed in various interfaces that show available permissions. (:issue:`1940`)
-- The ``/db/-/create`` API for :ref:`creating a table <TableCreateView>` now accepts ``"ignore": true`` and ``"replace": true`` options when called with the ``"rows"`` property that creates a new table based on an example set of rows. This means the API can be called multiple times with different rows, setting rules for what should happen if a primary key collides with an existing row. (:issue:`1927`)
-- Arbitrary permissions can now be configured at the instance, database and resource (table, SQL view or canned query) level in Datasette's :ref:`metadata` JSON and YAML files. The new ``"permissions"`` key can be used to specify which actors should have which permissions. See :ref:`authentication_permissions_other` for details. (:issue:`1636`)
-- The ``/-/create-token`` page can now be used to create API tokens which are restricted to just a subset of actions, including against specific databases or resources. See :ref:`CreateTokenView` for details. (:issue:`1947`)
-- Likewise, the ``datasette create-token`` CLI command can now create tokens with :ref:`a subset of permissions <authentication_cli_create_token_restrict>`. (:issue:`1855`)
-- New :ref:`datasette.create_token() API method <datasette_create_token>` for programmatically creating signed API tokens. (:issue:`1951`)
-- ``/db/-/create`` API now requires actor to have ``insert-row`` permission in order to use the ``"row"`` or ``"rows"`` properties. (:issue:`1937`)
-
-.. _v1_0_a1:
-
-1.0a1 (2022-12-01)
-------------------
-
-- Write APIs now serve correct CORS headers if Datasette is started in ``--cors`` mode. See the full list of :ref:`CORS headers <json_api>` in the documentation. (:issue:`1922`)
-- Fixed a bug where the ``_memory`` database could be written to even though writes were not persisted. (:issue:`1917`)
-- The https://latest.datasette.io/ demo instance now includes an ``ephemeral`` database which can be used to test Datasette's write APIs, using the new `datasette-ephemeral-tables <https://datasette.io/plugins/datasette-ephemeral-tables>`_ plugin to drop any created tables after five minutes. This database is only available if you sign in as the root user using the link on the homepage. (:issue:`1915`)
-- Fixed a bug where hitting the write endpoints with a ``GET`` request returned a 500 error. It now returns a 405 (method not allowed) error instead. (:issue:`1916`)
-- The list of endpoints in the API explorer now lists mutable databases first. (:issue:`1918`)
-- The ``"ignore": true`` and ``"replace": true`` options for the insert API are :ref:`now documented <TableInsertView>`. (:issue:`1924`)
-
-.. _v1_0_a0:
-
-1.0a0 (2022-11-29)
-------------------
-
-This first alpha release of Datasette 1.0 introduces a brand new collection of APIs for writing to the database (:issue:`1850`), as well as a new API token mechanism baked into Datasette core. Previously, API tokens have only been supported by installing additional plugins.
-
-This is very much a preview: expect many more backwards incompatible API changes prior to the full 1.0 release.
-
-Feedback enthusiastically welcomed, either through `issue comments <https://github.com/simonw/datasette/issues/1850>`__ or via the `Datasette Discord <https://datasette.io/discord>`__ community.
-
-Signed API tokens
-~~~~~~~~~~~~~~~~~
-
-- New ``/-/create-token`` page allowing authenticated users to create signed API tokens that can act on their behalf, see :ref:`CreateTokenView`. (:issue:`1852`)
-- New ``datasette create-token`` command for creating tokens from the command line: :ref:`authentication_cli_create_token`.
-- New :ref:`setting_allow_signed_tokens` setting which can be used to turn off signed token support. (:issue:`1856`)
-- New :ref:`setting_max_signed_tokens_ttl` setting for restricting the maximum allowed duration of a signed token. (:issue:`1858`)
-
-Write API
-~~~~~~~~~
-
-- New API explorer at ``/-/api`` for trying out the API. (:issue:`1871`)
-- ``/db/-/create`` API for :ref:`TableCreateView`. (:issue:`1882`)
-- ``/db/table/-/insert`` API for :ref:`TableInsertView`. (:issue:`1851`)
-- ``/db/table/-/drop`` API for :ref:`TableDropView`. (:issue:`1874`)
-- ``/db/table/pk/-/update`` API for :ref:`RowUpdateView`. (:issue:`1863`)
-- ``/db/table/pk/-/delete`` API for :ref:`RowDeleteView`. (:issue:`1864`)
-
-.. _v0_63_2:
-
-0.63.2 (2022-11-18)
--------------------
-
-- Fixed a bug in ``datasette publish heroku`` where deployments failed due to an older version of Python being requested. (:issue:`1905`)
-- New ``datasette publish heroku --generate-dir <dir>`` option for generating a Heroku deployment directory without deploying it.
-
-.. _v0_63_1:
-
-0.63.1 (2022-11-10)
--------------------
-
-- Fixed a bug where Datasette's table filter form would not redirect correctly when run behind a proxy using the :ref:`base_url <setting_base_url>` setting. (:issue:`1883`)
-- SQL query is now shown wrapped in a ``<textarea>`` if a query exceeds a time limit. (:issue:`1876`)
-- Fixed an intermittent "Too many open files" error while running the test suite. (:issue:`1843`)
-- New :ref:`database_close` internal method.
-
-.. _v0_63:
-
-0.63 (2022-10-27)
------------------
-
-See `Datasette 0.63: The annotated release notes <https://simonwillison.net/2022/Oct/27/datasette-0-63/>`__ for more background on the changes in this release.
-
-Features
-~~~~~~~~
-
-- Now tested against Python 3.11. Docker containers used by ``datasette publish`` and ``datasette package`` both now use that version of Python. (:issue:`1853`)
-- ``--load-extension`` option now supports entrypoints. Thanks, Alex Garcia. (:pr:`1789`)
-- Facet size can now be set per-table with the new ``facet_size`` table metadata option. (:issue:`1804`)
-- The :ref:`setting_truncate_cells_html` setting now also affects long URLs in columns. (:issue:`1805`)
-- The non-JavaScript SQL editor textarea now increases height to fit the SQL query. (:issue:`1786`)
-- Facets are now displayed with better line-breaks in long values. Thanks, Daniel Rech. (:pr:`1794`)
-- The ``settings.json`` file used in :ref:`config_dir` is now validated on startup. (:issue:`1816`)
-- SQL queries can now include leading SQL comments, using ``/* ... */`` or ``-- ...`` syntax. Thanks,  Charles Nepote. (:issue:`1860`)
-- SQL query is now re-displayed when terminated with a time limit error. (:issue:`1819`)
-- The :ref:`inspect data <performance_inspect>` mechanism is now used to speed up server startup - thanks, Forest Gregg. (:issue:`1834`)
-- In :ref:`config_dir` databases with filenames ending in ``.sqlite`` or ``.sqlite3`` are now automatically added to the Datasette instance. (:issue:`1646`)
-- Breadcrumb navigation display now respects the current user's permissions. (:issue:`1831`)
-
-Plugin hooks and internals
-~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-- The :ref:`plugin_hook_prepare_jinja2_environment` plugin hook now accepts an optional ``datasette`` argument. Hook implementations can also now return an ``async`` function which will be awaited automatically. (:issue:`1809`)
-- ``Database(is_mutable=)`` now defaults to ``True``. (:issue:`1808`)
-- The :ref:`datasette.check_visibility() <datasette_check_visibility>` method now accepts an optional ``permissions=`` list, allowing it to take multiple permissions into account at once when deciding if something should be shown as public or private. This has been used to correctly display padlock icons in more places in the Datasette interface. (:issue:`1829`)
-- Datasette no longer enforces upper bounds on its dependencies. (:issue:`1800`)
-
-Documentation
-~~~~~~~~~~~~~
-
-- New tutorial: `Cleaning data with sqlite-utils and Datasette <https://datasette.io/tutorials/clean-data>`__.
-- Screenshots in the documentation are now maintained using `shot-scraper <https://shot-scraper.datasette.io/>`__, as described in `Automating screenshots for the Datasette documentation using shot-scraper <https://simonwillison.net/2022/Oct/14/automating-screenshots/>`__. (:issue:`1844`)
-- More detailed command descriptions on the :ref:`CLI reference <cli_reference>` page. (:issue:`1787`)
-- New documentation on :ref:`deploying_openrc` - thanks, Adam Simpson. (:pr:`1825`)
-
-.. _v0_62:
-
-0.62 (2022-08-14)
------------------
-
-Datasette can now run entirely in your browser using WebAssembly. Try out `Datasette Lite <https://lite.datasette.io/>`__, take a look `at the code <https://github.com/simonw/datasette-lite>`__ or read more about it in `Datasette Lite: a server-side Python web application running in a browser <https://simonwillison.net/2022/May/4/datasette-lite/>`__.
-
-Datasette now has a `Discord community <https://datasette.io/discord>`__ for questions and discussions about Datasette and its ecosystem of projects.
-
-Features
-~~~~~~~~
-
-- Datasette is now compatible with `Pyodide <https://pyodide.org/>`__.  This is the enabling technology behind `Datasette Lite <https://lite.datasette.io/>`__. (:issue:`1733`)
-- Database file downloads now implement conditional GET using ETags. (:issue:`1739`)
-- HTML for facet results and suggested results has been extracted out into new templates ``_facet_results.html`` and ``_suggested_facets.html``. Thanks, M. Nasimul Haque. (:pr:`1759`)
-- Datasette now runs some SQL queries in parallel. This has limited impact on performance, see `this research issue <https://github.com/simonw/datasette/issues/1727>`__ for details.
-- New ``--nolock`` option for ignoring file locks when opening read-only databases. (:issue:`1744`)
-- Spaces in the database names in URLs are now encoded as ``+`` rather than ``~20``. (:issue:`1701`)
-- ``<Binary: 2427344 bytes>`` is now displayed as ``<Binary: 2,427,344 bytes>`` and is accompanied by tooltip showing "2.3MB". (:issue:`1712`)
-- The base Docker image used by ``datasette publish cloudrun``, ``datasette package`` and the `official Datasette image <https://hub.docker.com/datasetteproject/datasette>`__ has been upgraded to ``3.10.6-slim-bullseye``.  (:issue:`1768`)
-- Canned writable queries against immutable databases now show a warning message. (:issue:`1728`)
-- ``datasette publish cloudrun`` has a new ``--timeout`` option which can be used to increase the time limit applied by the Google Cloud build environment. Thanks, Tim Sherratt. (:pr:`1717`)
-- ``datasette publish cloudrun`` has new ``--min-instances`` and ``--max-instances`` options. (:issue:`1779`)
-
-Plugin hooks
-~~~~~~~~~~~~
-
-- New plugin hook: :ref:`handle_exception() <plugin_hook_handle_exception>`, for custom handling of exceptions caught by Datasette. (:issue:`1770`)
-- The :ref:`render_cell() <plugin_hook_render_cell>` plugin hook is now also passed a ``row`` argument, representing the ``sqlite3.Row`` object that is being rendered. (:issue:`1300`)
-- The :ref:`configuration directory <config_dir>` is now stored in ``datasette.config_dir``, making it available to plugins. Thanks, Chris Amico. (:pr:`1766`)
-
-Bug fixes
-~~~~~~~~~
-
-- Don't show the facet option in the cog menu if faceting is not allowed. (:issue:`1683`)
-- ``?_sort`` and ``?_sort_desc`` now work if the column that is being sorted has been excluded from the query using ``?_col=`` or ``?_nocol=``. (:issue:`1773`)
-- Fixed bug where ``?_sort_desc`` was duplicated in the URL every time the Apply button was clicked. (:issue:`1738`)
-
-Documentation
-~~~~~~~~~~~~~
-
-- Examples in the documentation now include a copy-to-clipboard button. (:issue:`1748`)
-- Documentation now uses the `Furo <https://github.com/pradyunsg/furo>`__ Sphinx theme. (:issue:`1746`)
-- Code examples in the documentation are now all formatted using Black. (:issue:`1718`)
-- ``Request.fake()`` method is now documented, see :ref:`internals_request`.
-- New documentation for plugin authors: :ref:`testing_plugins_register_in_test`. (:issue:`903`)
-
-.. _v0_61_1:
-
-0.61.1 (2022-03-23)
--------------------
-
-- Fixed a bug where databases with a different route from their name (as used by the `datasette-hashed-urls plugin <https://datasette.io/plugins/datasette-hashed-urls>`__) returned errors when executing custom SQL queries. (:issue:`1682`)
-
-.. _v0_61:
-
-0.61 (2022-03-23)
------------------
-
-In preparation for Datasette 1.0, this release includes two potentially backwards-incompatible changes. Hashed URL mode has been moved to a separate plugin, and the way Datasette generates URLs to databases and tables with special characters in their name such as ``/`` and ``.`` has changed.
-
-Datasette also now requires Python 3.7 or higher.
-
-- URLs within Datasette now use a different encoding scheme for tables or databases that include "special" characters outside of the range of ``a-zA-Z0-9_-``. This scheme is explained here: :ref:`internals_tilde_encoding`. (:issue:`1657`)
-- Removed hashed URL mode from Datasette. The new ``datasette-hashed-urls`` plugin can be used to achieve the same result, see :ref:`performance_hashed_urls` for details. (:issue:`1661`)
-- Databases can now have a custom path within the Datasette instance that is independent of the database name, using the ``db.route`` property. (:issue:`1668`)
-- Datasette is now covered by a `Code of Conduct <https://github.com/simonw/datasette/blob/main/CODE_OF_CONDUCT.md>`__. (:issue:`1654`)
-- Python 3.6 is no longer supported. (:issue:`1577`)
-- Tests now run against Python 3.11-dev. (:issue:`1621`)
-- New ``datasette.ensure_permissions(actor, permissions)`` internal method for checking multiple permissions at once. (:issue:`1675`)
-- New :ref:`datasette.check_visibility(actor, action, resource=None) <datasette_check_visibility>` internal method for checking if a user can see a resource that would otherwise be invisible to unauthenticated users. (:issue:`1678`)
-- Table and row HTML pages now include a ``<link rel="alternate" type="application/json+datasette" href="...">`` element and return a ``Link: URL; rel="alternate"; type="application/json+datasette"`` HTTP header pointing to the JSON version of those pages. (:issue:`1533`)
-- ``Access-Control-Expose-Headers: Link`` is now added to the CORS headers, allowing remote JavaScript to access that header.
-- Canned queries are now shown at the top of the database page, directly below the SQL editor. Previously they were shown at the bottom, below the list of tables. (:issue:`1612`)
-- Datasette now has a default favicon. (:issue:`1603`)
-- ``sqlite_stat`` tables are now hidden by default. (:issue:`1587`)
-- SpatiaLite tables ``data_licenses``, ``KNN`` and ``KNN2`` are now hidden by default. (:issue:`1601`)
-- SQL query tracing mechanism now works for queries executed in ``asyncio`` sub-tasks, such as those created by ``asyncio.gather()``. (:issue:`1576`)
-- :ref:`internals_tracer` mechanism is now documented.
-- Common Datasette symbols can now be imported directly from the top-level ``datasette`` package, see :ref:`internals_shortcuts`. Those symbols are ``Response``, ``Forbidden``, ``NotFound``, ``hookimpl``, ``actor_matches_allow``. (:issue:`957`)
-- ``/-/versions`` page now returns additional details for libraries used by SpatiaLite. (:issue:`1607`)
-- Documentation now links to the `Datasette Tutorials <https://datasette.io/tutorials>`__.
-- Datasette will now also look for SpatiaLite in ``/opt/homebrew`` - thanks, Dan Peterson. (:pr:`1649`)
-- Fixed bug where :ref:`custom pages <custom_pages>` did not work on Windows. Thanks, Robert Christie. (:issue:`1545`)
-- Fixed error caused when a table had a column named ``n``. (:issue:`1228`)
-
-.. _v0_60_2:
-
-0.60.2 (2022-02-07)
--------------------
-
-- Fixed a bug where Datasette would open the same file twice with two different database names if you ran ``datasette file.db file.db``. (:issue:`1632`)
-
-.. _v0_60_1:
-
-0.60.1 (2022-01-20)
--------------------
-
-- Fixed a bug where installation on Python 3.6 stopped working due to a change to an underlying dependency. This release can now be installed on Python 3.6, but is the last release of Datasette that will support anything less than Python 3.7. (:issue:`1609`)
-
-.. _v0_60:
-
-0.60 (2022-01-13)
------------------
-
-Plugins and internals
-~~~~~~~~~~~~~~~~~~~~~
-
-- New plugin hook: :ref:`plugin_hook_filters_from_request`, which runs on the table page and can be used to support new custom query string parameters that modify the SQL query. (:issue:`473`)
-- Added two additional methods for writing to the database: :ref:`database_execute_write_script` and :ref:`database_execute_write_many`. (:issue:`1570`)
-- The :ref:`db.execute_write() <database_execute_write>` internal method now defaults to blocking until the write operation has completed. Previously it defaulted to queuing the write and then continuing to run code while the write was in the queue. (:issue:`1579`)
-- Database write connections now execute the :ref:`plugin_hook_prepare_connection` plugin hook. (:issue:`1564`)
-- The ``Datasette()`` constructor no longer requires the ``files=`` argument, and is now documented at :ref:`internals_datasette`. (:issue:`1563`)
-- The tracing feature now traces write queries, not just read queries. (:issue:`1568`)
-- The query string variables exposed by ``request.args`` will now include blank strings for arguments such as ``foo`` in ``?foo=&bar=1`` rather than ignoring those parameters entirely. (:issue:`1551`)
-
-Faceting
-~~~~~~~~
-
-- The number of unique values in a facet is now always displayed. Previously it was only displayed if the user specified ``?_facet_size=max``. (:issue:`1556`)
-- Facets of type ``date`` or ``array`` can now be configured in ``metadata.json``, see :ref:`facets_metadata`. Thanks, David Larlet. (:issue:`1552`)
-- New ``?_nosuggest=1`` parameter for table views, which disables facet suggestion. (:issue:`1557`)
-- Fixed bug where ``?_facet_array=tags&_facet=tags`` would only display one of the two selected facets. (:issue:`625`)
-
-Other small fixes
-~~~~~~~~~~~~~~~~~
-
-- Made several performance improvements to the database schema introspection code that runs when Datasette first starts up. (:issue:`1555`)
-- Label columns detected for foreign keys are now case-insensitive, so ``Name`` or ``TITLE`` will be detected in the same way as ``name`` or ``title``. (:issue:`1544`)
-- Upgraded Pluggy dependency to 1.0. (:issue:`1575`)
-- Now using `Plausible analytics <https://plausible.io/>`__ for the Datasette documentation.
-- ``explain query plan`` is now allowed with varying amounts of whitespace in the query. (:issue:`1588`)
-- New :ref:`cli_reference` page showing the output of ``--help`` for each of the ``datasette`` sub-commands. This lead to several small improvements to the help copy. (:issue:`1594`)
-- Fixed bug where writable canned queries could not be used with custom templates.  (:issue:`1547`)
-- Improved fix for a bug where columns with a underscore prefix could result in unnecessary hidden form fields. (:issue:`1527`)
-
-.. _v0_59_4:
-
-0.59.4 (2021-11-29)
--------------------
-
-- Fixed bug where columns with a leading underscore could not be removed from the interactive filters list. (:issue:`1527`)
-- Fixed bug where columns with a leading underscore were not correctly linked to by the "Links from other tables" interface on the row page. (:issue:`1525`)
-- Upgraded dependencies ``aiofiles``, ``black`` and ``janus``.
-
-.. _v0_59_3:
-
-0.59.3 (2021-11-20)
--------------------
-
-- Fixed numerous bugs when running Datasette :ref:`behind a proxy <deploying_proxy>` with a prefix URL path using the :ref:`setting_base_url` setting. A live demo of this mode is now available at `datasette-apache-proxy-demo.datasette.io/prefix/ <https://datasette-apache-proxy-demo.datasette.io/prefix/>`__. (:issue:`1519`, :issue:`838`)
-- ``?column__arraycontains=`` and ``?column__arraynotcontains=`` table parameters now also work against SQL views. (:issue:`448`)
-- ``?_facet_array=column`` no longer returns incorrect counts if columns contain the same value more than once.
-
-.. _v0_59_2:
-
-0.59.2 (2021-11-13)
--------------------
-
-- Column names with a leading underscore now work correctly when used as a facet. (:issue:`1506`)
-- Applying ``?_nocol=`` to a column no longer removes that column from the filtering interface. (:issue:`1503`)
-- Official Datasette Docker container now uses Debian Bullseye as the base image. (:issue:`1497`)
-- Datasette is four years old today! Here's the `original release announcement <https://simonwillison.net/2017/Nov/13/datasette/>`__ from 2017.
-
-.. _v0_59_1:
-
-0.59.1 (2021-10-24)
--------------------
-
-- Fix compatibility with Python 3.10. (:issue:`1482`)
-- Documentation on how to use :ref:`sql_parameters` with integer and floating point values. (:issue:`1496`)
-
 .. _v0_59:
 
 0.59 (2021-10-14)
@@ -1018,14 +13,14 @@ Other small fixes
 - New :ref:`register_commands() <plugin_hook_register_commands>` plugin hook allows plugins to register additional Datasette CLI commands, e.g. ``datasette mycommand file.db``. (:issue:`1449`)
 - Adding ``?_facet_size=max`` to a table page now shows the number of unique values in each facet. (:issue:`1423`)
 - Upgraded dependency `httpx 0.20 <https://github.com/encode/httpx/releases/tag/0.20.0>`__ - the undocumented ``allow_redirects=`` parameter to :ref:`internals_datasette_client` is now ``follow_redirects=``, and defaults to ``False`` where it previously defaulted to ``True``. (:issue:`1488`)
-- The ``--cors`` option now causes Datasette to return the ``Access-Control-Allow-Headers: Authorization`` header, in addition to ``Access-Control-Allow-Origin: *``. (:pr:`1467`)
+- The ``--cors`` option now causes Datasette to return the ``Access-Control-Allow-Headers: Authorization`` header, in addition to ``Access-Control-Allow-Origin: *``. (`#1467 <https://github.com/simonw/datasette/pull/1467>`__)
 - Code that figures out which named parameters a SQL query takes in order to display form fields for them is no longer confused by strings that contain colon characters. (:issue:`1421`)
 - Renamed ``--help-config`` option to ``--help-settings``. (:issue:`1431`)
 - ``datasette.databases`` property is now a documented API. (:issue:`1443`)
 - The ``base.html`` template now wraps everything other than the ``<footer>`` in a ``<div class="not-footer">`` element, to help with advanced CSS customization. (:issue:`1446`)
 - The :ref:`render_cell() <plugin_hook_render_cell>` plugin hook can now return an awaitable function. This means the hook can execute SQL queries. (:issue:`1425`)
 - :ref:`plugin_register_routes` plugin hook now accepts an optional ``datasette`` argument. (:issue:`1404`)
-- New ``hide_sql`` canned query option for defaulting to hiding the SQL query used by a canned query, see :ref:`canned_queries_options`. (:issue:`1422`)
+- New ``hide_sql`` canned query option for defaulting to hiding the SQL quey used by a canned query, see :ref:`canned_queries_options`. (:issue:`1422`)
 - New ``--cpu`` option for :ref:`datasette publish cloudrun <publish_cloud_run>`. (:issue:`1420`)
 - If `Rich <https://github.com/willmcgugan/rich>`__ is installed in the same virtual environment as Datasette, it will be used to provide enhanced display of error tracebacks on the console. (:issue:`1416`)
 - ``datasette.utils`` :ref:`internals_utils_parse_metadata` function, used by the new `datasette-remote-metadata plugin <https://datasette.io/plugins/datasette-remote-metadata>`__, is now a documented API. (:issue:`1405`)
@@ -1046,8 +41,8 @@ Other small fixes
 
 - New ``datasette --uds /tmp/datasette.sock`` option for binding Datasette to a Unix domain socket, see :ref:`proxy documentation <deploying_proxy>` (:issue:`1388`)
 - ``"searchmode": "raw"`` table metadata option for defaulting a table to executing SQLite full-text search syntax without first escaping it, see :ref:`full_text_search_advanced_queries`. (:issue:`1389`)
-- New plugin hook: ``get_metadata()``, for returning custom metadata for an instance, database or table. Thanks, Brandon Roberts! (:issue:`1384`)
-- New plugin hook: ``skip_csrf``, for opting out of CSRF protection based on the incoming request. (:issue:`1377`)
+- New plugin hook: :ref:`plugin_hook_get_metadata`, for returning custom metadata for an instance, database or table. Thanks, Brandon Roberts! (:issue:`1384`)
+- New plugin hook: :ref:`plugin_hook_skip_csrf`, for opting out of CSRF protection based on the incoming request. (:issue:`1377`)
 - The :ref:`menu_links() <plugin_hook_menu_links>`, :ref:`table_actions() <plugin_hook_table_actions>` and :ref:`database_actions() <plugin_hook_database_actions>` plugin hooks all gained a new optional ``request`` argument providing access to the current request. (:issue:`1371`)
 - Major performance improvement for Datasette faceting. (:issue:`1394`)
 - Improved documentation for :ref:`deploying_proxy` to recommend using ``ProxyPreservehost On`` with Apache. (:issue:`1387`)
@@ -1117,8 +112,8 @@ Documentation improvements, bug fixes and support for SpatiaLite 5.
 - The :ref:`Response.asgi_send() <internals_response_asgi_send>` method is now documented. (:issue:`1266`)
 - The official Datasette Docker image now bundles SpatiaLite version 5. (:issue:`1278`)
 - Fixed a ``no such table: pragma_database_list`` bug when running Datasette against SQLite versions prior to SQLite 3.16.0. (:issue:`1276`)
-- HTML lists displayed in table cells are now styled correctly. Thanks, Bob Whitelock. (:issue:`1141`, :pr:`1252`)
-- Configuration directory mode now correctly serves immutable databases that are listed in ``inspect-data.json``. Thanks Campbell Allen and Frankie Robertson. (:pr:`1031`, :pr:`1229`)
+- HTML lists displayed in table cells are now styled correctly. Thanks, Bob Whitelock. (:issue:`1141`, `#1252 <https://github.com/simonw/datasette/pull/1252>`__)
+- Configuration directory mode now correctly serves immutable databases that are listed in ``inspect-data.json``. Thanks Campbell Allen and Frankie Robertson. (`#1031 <https://github.com/simonw/datasette/pull/1031>`__, `#1229 <https://github.com/simonw/datasette/pull/1229>`__)
 
 .. _v0_55:
 
@@ -1174,7 +169,7 @@ JavaScript modules
 
 To use modules, JavaScript needs to be included in ``<script>`` tags with a ``type="module"`` attribute.
 
-Datasette now has the ability to output ``<script type="module">`` in places where you may wish to take advantage of modules. The ``extra_js_urls`` option described in :ref:`configuration_reference_css_js` can now be used with modules, and module support is also available for the :ref:`extra_body_script() <plugin_hook_extra_body_script>` plugin hook. (:issue:`1186`, :issue:`1187`)
+Datasette now has the ability to output ``<script type="module">`` in places where you may wish to take advantage of modules. The ``extra_js_urls`` option described in :ref:`customization_css_and_javascript` can now be used with modules, and module support is also available for the :ref:`extra_body_script() <plugin_hook_extra_body_script>` plugin hook. (:issue:`1186`, :issue:`1187`)
 
 `datasette-leaflet-freedraw <https://datasette.io/plugins/datasette-leaflet-freedraw>`__ is the first example of a Datasette plugin that takes advantage of the new support for JavaScript modules. See `Drawing shapes on a map to query a SpatiaLite database <https://simonwillison.net/2021/Jan/24/drawing-shapes-spatialite/>`__ for more on this plugin.
 
@@ -1295,7 +290,7 @@ A new visual design, plugin hooks for adding navigation options, better handling
 New visual design
 ~~~~~~~~~~~~~~~~~
 
-Datasette is no longer white and grey with blue and purple links! `Natalie Downe <https://twitter.com/natbat>`__ has been working on a visual refresh, the first iteration of which is included in this release. (:pr:`1056`)
+Datasette is no longer white and grey with blue and purple links! `Natalie Downe <https://twitter.com/natbat>`__ has been working on a visual refresh, the first iteration of which is included in this release. (`#1056 <https://github.com/simonw/datasette/pull/1056>`__)
 
 .. image:: datasette-0.51.png
    :width: 740px
@@ -1331,7 +326,7 @@ Smaller changes
 ~~~~~~~~~~~~~~~
 
 - Wide tables shown within Datasette now scroll horizontally (:issue:`998`). This is achieved using a new ``<div class="table-wrapper">`` element which may impact the implementation of some plugins (for example `this change to datasette-cluster-map <https://github.com/simonw/datasette-cluster-map/commit/fcb4abbe7df9071c5ab57defd39147de7145b34e>`__).
-- New :ref:`actions_debug_menu` permission. (:issue:`1068`)
+- New :ref:`permissions_debug_menu` permission. (:issue:`1068`)
 - Removed ``--debug`` option, which didn't do anything. (:issue:`814`)
 - ``Link:`` HTTP header pagination. (:issue:`1014`)
 - ``x`` button for clearing filters. (:issue:`1016`)
@@ -1372,7 +367,7 @@ New :ref:`deploying` documentation with guides for deploying Datasette on a Linu
 
 Other improvements in this release:
 
-- :ref:`publish_cloud_run` documentation now covers Google Cloud SDK options. Thanks, Geoffrey Hing. (:pr:`995`)
+- :ref:`publish_cloud_run` documentation now covers Google Cloud SDK options. Thanks, Geoffrey Hing. (`#995 <https://github.com/simonw/datasette/pull/995>`__)
 - New ``datasette -o`` option which opens your browser as soon as Datasette starts up. (:issue:`970`)
 - Datasette now sets ``sqlite3.enable_callback_tracebacks(True)`` so that errors in custom SQL functions will display tracebacks. (:issue:`891`)
 - Fixed two rendering bugs with column headers in portrait mobile view. (:issue:`978`, :issue:`980`)
@@ -1454,7 +449,7 @@ See also `Datasette 0.49: The annotated release notes <https://simonwillison.net
 - Datasette now has `a GitHub discussions forum <https://github.com/simonw/datasette/discussions>`__ for conversations about the project that go beyond just bug reports and issues.
 - Datasette can now be installed on macOS using Homebrew! Run ``brew install simonw/datasette/datasette``. See :ref:`installation_homebrew`. (:issue:`335`)
 - Two new commands: ``datasette install name-of-plugin`` and ``datasette uninstall name-of-plugin``. These are equivalent to ``pip install`` and ``pip uninstall`` but automatically run in the same virtual environment as Datasette, so users don't have to figure out where that virtual environment is - useful for installations created using Homebrew or ``pipx``. See :ref:`plugins_installing`. (:issue:`925`)
-- A new command-line option, ``datasette --get``, accepts a path to a URL within the Datasette instance. It will run that request through Datasette (without starting a web server) and print out the response. See :ref:`cli_datasette_get` for an example. (:issue:`926`)
+- A new command-line option, ``datasette --get``, accepts a path to a URL within the Datasette instance. It will run that request through Datasette (without starting a web server) and print out the response. See :ref:`getting_started_datasette_get` for an example. (:issue:`926`)
 
 .. _v0_46:
 
@@ -1476,7 +471,7 @@ See also `Datasette 0.49: The annotated release notes <https://simonwillison.net
 - ``tests`` are now excluded from the Datasette package properly - thanks, abeyerpath. (:issue:`456`)
 - The Datasette package published to PyPI now includes ``sdist`` as well as ``bdist_wheel``.
 - Better titles for canned query pages. (:issue:`887`)
-- Now only loads Python files from a directory passed using the ``--plugins-dir`` option - thanks, Amjith Ramanujam. (:pr:`890`)
+- Now only loads Python files from a directory passed using the ``--plugins-dir`` option - thanks, Amjith Ramanujam. (`#890 <https://github.com/simonw/datasette/pull/890>`__)
 - New documentation section on :ref:`publish_vercel`.
 
 .. _v0_45:
@@ -1555,10 +550,7 @@ Prior to this release the Datasette ecosystem has treated authentication as excl
 
 You'll need to install plugins if you want full user accounts, but default Datasette can now authenticate a single root user with the new ``--root`` command-line option, which outputs a one-time use URL to :ref:`authenticate as a root actor <authentication_root>` (:issue:`784`)::
 
-    datasette fixtures.db --root
-
-::
-
+    $ datasette fixtures.db --root
     http://127.0.0.1:8001/-/auth-token?token=5b632f8cd44b868df625f5a6e2185d88eea5b22237fd3cc8773f107cc4fd6477
     INFO:     Started server process [14973]
     INFO:     Waiting for application startup.
@@ -1590,7 +582,7 @@ You can use the new ``"allow"`` block syntax in ``metadata.json`` (or ``metadata
 
 See :ref:`authentication_permissions_allow` for more details.
 
-Plugins can implement their own custom permission checks using the new ``plugin_hook_permission_allowed()`` plugin hook.
+Plugins can implement their own custom permission checks using the new :ref:`plugin_hook_permission_allowed` hook.
 
 A new debug page at ``/-/permissions`` shows recent permission checks, to help administrators and plugin authors understand exactly what checks are being performed. This tool defaults to only being available to the root user, but can be exposed to other users by plugins that respond to the ``permissions-debug`` permission. (:issue:`788`)
 
@@ -1666,7 +658,7 @@ Smaller changes
 - New :ref:`datasette.get_database() <datasette_get_database>` method.
 - Added ``_`` prefix to many private, undocumented methods of the Datasette class. (:issue:`576`)
 - Removed the ``db.get_outbound_foreign_keys()`` method which duplicated the behaviour of ``db.foreign_keys_for_table()``.
-- New ``await datasette.permission_allowed()`` method.
+- New :ref:`await datasette.permission_allowed() <datasette_permission_allowed>` method.
 - ``/-/actor`` debugging endpoint for viewing the currently authenticated actor.
 - New ``request.cookies`` property.
 - ``/-/plugins`` endpoint now shows a list of hooks implemented by each plugin, e.g. https://latest.datasette.io/-/plugins?all=1
@@ -1704,7 +696,7 @@ The main focus of this release is a major upgrade to the :ref:`plugin_register_o
 * Redesign of :ref:`plugin_register_output_renderer` to provide more context to the render callback and support an optional ``"can_render"`` callback that controls if a suggested link to the output format is provided. (:issue:`581`, :issue:`770`)
 * Visually distinguish float and integer columns - useful for figuring out why order-by-column might be returning unexpected results. (:issue:`729`)
 * The :ref:`internals_request`, which is passed to several plugin hooks, is now documented. (:issue:`706`)
-* New ``metadata.json`` option for setting a custom default page size for specific tables and views, see :ref:`table_configuration_size`. (:issue:`751`)
+* New ``metadata.json`` option for setting a custom default page size for specific tables and views, see :ref:`metadata_page_size`. (:issue:`751`)
 * Canned queries can now be configured with a default URL fragment hash, useful when working with plugins such as `datasette-vega <https://github.com/simonw/datasette-vega>`__, see :ref:`canned_queries_options`. (:issue:`706`)
 * Fixed a bug in ``datasette publish`` when running on operating systems where the ``/tmp`` directory lives in a different volume, using a backport of the Python 3.8 ``shutil.copytree()`` function. (:issue:`744`)
 * Every plugin hook is now covered by the unit tests, and a new unit test checks that each plugin hook has at least one corresponding test. (:issue:`771`, :issue:`773`)
@@ -1729,7 +721,7 @@ You can now create :ref:`custom pages <custom_pages>` within your Datasette inst
 
 :ref:`config_dir` (:issue:`731`) allows you to define a custom Datasette instance as a directory. So instead of running the following::
 
-    datasette one.db two.db \
+    $ datasette one.db two.db \
       --metadata=metadata.json \
       --template-dir=templates/ \
       --plugins-dir=plugins \
@@ -1737,7 +729,7 @@ You can now create :ref:`custom pages <custom_pages>` within your Datasette inst
 
 You can instead arrange your files in a single directory called ``my-project`` and run this::
 
-    datasette my-project/
+    $ datasette my-project/
 
 Also in this release:
 
@@ -1745,7 +737,7 @@ Also in this release:
 * Datasette now has a *pattern portfolio* at ``/-/patterns`` - e.g. https://latest.datasette.io/-/patterns. This is a page that shows every Datasette user interface component in one place, to aid core development and people building custom CSS themes. (:issue:`151`)
 * SQLite `PRAGMA functions <https://www.sqlite.org/pragma.html#pragfunc>`__ such as ``pragma_table_info(tablename)`` are now allowed in Datasette SQL queries. (:issue:`761`)
 * Datasette pages now consistently return a ``content-type`` of ``text/html; charset=utf-8"``. (:issue:`752`)
-* Datasette now handles an ASGI ``raw_path`` value of ``None``, which should allow compatibility with the `Mangum <https://github.com/erm/mangum>`__ adapter for running ASGI apps on AWS Lambda. Thanks, Colin Dellow. (:pr:`719`)
+* Datasette now handles an ASGI ``raw_path`` value of ``None``, which should allow compatibility with the `Mangum <https://github.com/erm/mangum>`__ adapter for running ASGI apps on AWS Lambda. Thanks, Colin Dellow. (`#719 <https://github.com/simonw/datasette/pull/719>`__)
 * Installation documentation now covers how to :ref:`installation_pipx`. (:issue:`756`)
 * Improved the documentation for :ref:`full_text_search`. (:issue:`748`)
 
@@ -1754,7 +746,7 @@ Also in this release:
 0.40 (2020-04-21)
 -----------------
 
-* Datasette :ref:`metadata` can now be provided as a YAML file as an optional alternative to JSON. (:issue:`713`)
+* Datasette :ref:`metadata` can now be provided as a YAML file as an optional alternative to JSON. See :ref:`metadata_yaml`. (:issue:`713`)
 * Removed support for ``datasette publish now``, which used the the now-retired Zeit Now v1 hosting platform. A new plugin, `datasette-publish-now <https://github.com/simonw/datasette-publish-now>`__, can be installed to publish data to Zeit (`now Vercel <https://vercel.com/blog/zeit-is-now-vercel>`__) Now v2. (:issue:`710`)
 * Fixed a bug where the ``extra_template_vars(request, view_name)`` plugin hook was not receiving the correct ``view_name``. (:issue:`716`)
 * Variables added to the template context by the ``extra_template_vars()`` plugin hook are now shown in the ``?_context=1`` debugging mode (see :ref:`setting_template_debug`). (:issue:`693`)
@@ -1768,7 +760,7 @@ Also in this release:
 -----------------
 
 * New :ref:`setting_base_url` configuration setting for serving up the correct links while running Datasette under a different URL prefix. (:issue:`394`)
-* New metadata settings ``"sort"`` and ``"sort_desc"`` for setting the default sort order for a table. See :ref:`table_configuration_sort`. (:issue:`702`)
+* New metadata settings ``"sort"`` and ``"sort_desc"`` for setting the default sort order for a table. See :ref:`metadata_default_sort`. (:issue:`702`)
 * Sort direction arrow now displays by default on the primary key. This means you only have to click once (not twice) to sort in reverse order. (:issue:`677`)
 * New ``await Request(scope, receive).post_vars()`` method for accessing POST form variables. (:issue:`700`)
 * :ref:`plugin_hooks` documentation now links to example uses of each plugin. (:issue:`709`)
@@ -1798,7 +790,7 @@ Also in this release:
 -----------------
 
 * Plugins now have a supported mechanism for writing to a database, using the new ``.execute_write()`` and ``.execute_write_fn()`` methods. :ref:`Documentation <database_execute_write>`. (:issue:`682`)
-* Immutable databases that have had their rows counted using the ``inspect`` command now use the calculated count more effectively - thanks, Kevin Keogh. (:pr:`666`)
+* Immutable databases that have had their rows counted using the ``inspect`` command now use the calculated count more effectively - thanks, Kevin Keogh. (`#666 <https://github.com/simonw/datasette/pull/666>`__)
 * ``--reload`` no longer restarts the server if a database file is modified, unless that database was opened immutable mode with ``-i``. (:issue:`494`)
 * New ``?_searchmode=raw`` option turns off escaping for FTS queries in ``?_search=`` allowing full use of SQLite's `FTS5 query syntax <https://www.sqlite.org/fts5.html#full_text_query_syntax>`__. (:issue:`676`)
 
@@ -1819,7 +811,7 @@ Also in this release:
 
 * Added five new plugins and one new conversion tool to the :ref:`ecosystem`.
 * The ``Datasette`` class has a new ``render_template()`` method which can be used by plugins to render templates using Datasette's pre-configured `Jinja <https://jinja.palletsprojects.com/>`__ templating library.
-* You can now execute SQL queries that start with a ``-- comment`` - thanks, Jay Graves (:pr:`653`)
+* You can now execute SQL queries that start with a ``-- comment`` - thanks, Jay Graves (`#653 <https://github.com/simonw/datasette/pull/653>`__)
 
 .. _v0_34:
 
@@ -1827,7 +819,7 @@ Also in this release:
 -----------------
 
 * ``_search=`` queries are now correctly escaped using a new ``escape_fts()`` custom SQL function. This means you can now run searches for strings like ``park.`` without seeing errors. (:issue:`651`)
-* `Google Cloud Run <https://cloud.google.com/run/>`__ is no longer in beta, so ``datasette publish cloudrun`` has been updated to work even if the user has not installed the ``gcloud`` beta components package. Thanks, Katie McLaughlin (:pr:`660`)
+* `Google Cloud Run <https://cloud.google.com/run/>`__ is no longer in beta, so ``datasette publish cloudrun`` has been updated to work even if the user has not installed the ``gcloud`` beta components package. Thanks, Katie McLaughlin (`#660 <https://github.com/simonw/datasette/pull/660>`__)
 * ``datasette package`` now accepts a ``--port`` option for specifying which port the resulting Docker container should listen on. (:issue:`661`)
 
 .. _v0_33:
@@ -1865,7 +857,7 @@ Datasette now renders templates using `Jinja async mode <https://jinja.palletspr
 0.31.1 (2019-11-12)
 -------------------
 
-- Deployments created using ``datasette publish``  now use ``python:3.8`` base Docker image (:pr:`629`)
+- Deployments created using ``datasette publish``  now use ``python:3.8`` base Docker image (`#629 <https://github.com/simonw/datasette/pull/629>`__)
 
 .. _v0_31:
 
@@ -1878,10 +870,10 @@ If you are still running Python 3.5 you should stick with ``0.30.2``, which you 
 
     pip install datasette==0.30.2
 
-- Format SQL button now works with read-only SQL queries - thanks, Tobias Kunze (:pr:`602`)
+- Format SQL button now works with read-only SQL queries - thanks, Tobias Kunze (`#602 <https://github.com/simonw/datasette/pull/602>`__)
 - New ``?column__notin=x,y,z`` filter for table views (:issue:`614`)
 - Table view now uses ``select col1, col2, col3`` instead of ``select *``
-- Database filenames can now contain spaces - thanks, Tobias Kunze (:pr:`590`)
+- Database filenames can now contain spaces - thanks, Tobias Kunze (`#590 <https://github.com/simonw/datasette/pull/590>`__)
 - Removed obsolete ``?_group_count=col`` feature (:issue:`504`)
 - Improved user interface and documentation for ``datasette publish cloudrun`` (:issue:`608`)
 - Tables with indexes now show the ``CREATE INDEX`` statements on the table page (:issue:`618`)
@@ -1917,7 +909,7 @@ If you are still running Python 3.5 you should stick with ``0.30.2``, which you 
 - Allow ``EXPLAIN WITH...`` (:issue:`583`)
 - Button to format SQL - thanks, Tobias Kunze (:issue:`136`)
 - Sort databases on homepage by argument order - thanks, Tobias Kunze (:issue:`585`)
-- Display metadata footer on custom SQL queries - thanks, Tobias Kunze (:pr:`589`)
+- Display metadata footer on custom SQL queries - thanks, Tobias Kunze (`#589 <https://github.com/simonw/datasette/pull/589>`__)
 - Use ``--platform=managed`` for ``publish cloudrun`` (:issue:`587`)
 - Fixed bug returning non-ASCII characters in CSV (:issue:`584`)
 - Fix for ``/foo`` v.s. ``/foo-bar`` bug (:issue:`601`)
@@ -1928,7 +920,7 @@ If you are still running Python 3.5 you should stick with ``0.30.2``, which you 
 -------------------
 
 - Fixed implementation of CodeMirror on database page (:issue:`560`)
-- Documentation typo fixes - thanks, Min ho Kim (:pr:`561`)
+- Documentation typo fixes - thanks, Min ho Kim (`#561 <https://github.com/simonw/datasette/pull/561>`__)
 - Mechanism for detecting if a table has FTS enabled now works if the table name used alternative escaping mechanisms (:issue:`570`) - for compatibility with `a recent change to sqlite-utils <https://github.com/simonw/sqlite-utils/pull/57>`__.
 
 .. _v0_29_2:
@@ -2073,7 +1065,7 @@ Datasette :ref:`facets` provide an intuitive way to quickly summarize and intera
 
 Facet by array (:issue:`359`) is only available if your SQLite installation provides the ``json1`` extension. Datasette will automatically detect columns that contain JSON arrays of values and offer a faceting interface against those columns - useful for modelling things like tags without needing to break them out into a new table. See :ref:`facet_by_json_array` for more.
 
-The new :ref:`plugin_register_facet_classes` plugin hook (:pr:`445`) can be used to register additional custom facet classes. Each facet class should provide two methods: ``suggest()`` which suggests facet selections that might be appropriate for a provided SQL query, and ``facet_results()`` which executes a facet operation and returns results. Datasette's own faceting implementations have been refactored to use the same API as these plugins.
+The new :ref:`plugin_register_facet_classes` plugin hook (`#445 <https://github.com/simonw/datasette/pull/445>`__) can be used to register additional custom facet classes. Each facet class should provide two methods: ``suggest()`` which suggests facet selections that might be appropriate for a provided SQL query, and ``facet_results()`` which executes a facet operation and returns results. Datasette's own faceting implementations have been refactored to use the same API as these plugins.
 
 .. _v0_28_publish_cloudrun:
 
@@ -2082,7 +1074,7 @@ datasette publish cloudrun
 
 `Google Cloud Run <https://cloud.google.com/run/>`__ is a brand new serverless hosting platform from Google, which allows you to build a Docker container which will run only when HTTP traffic is received and will shut down (and hence cost you nothing) the rest of the time. It's similar to Zeit's Now v1 Docker hosting platform which sadly is `no longer accepting signups <https://hyperion.alpha.spectrum.chat/zeit/now/cannot-create-now-v1-deployments~d206a0d4-5835-4af5-bb5c-a17f0171fb25?m=MTU0Njk2NzgwODM3OA==>`__ from new users.
 
-The new ``datasette publish cloudrun`` command was contributed by Romain Primet (:pr:`434`) and publishes selected databases to a new Datasette instance running on Google Cloud Run.
+The new ``datasette publish cloudrun`` command was contributed by Romain Primet (`#434 <https://github.com/simonw/datasette/pull/434>`__) and publishes selected databases to a new Datasette instance running on Google Cloud Run.
 
 See :ref:`publish_cloud_run` for full documentation.
 
@@ -2091,7 +1083,7 @@ See :ref:`publish_cloud_run` for full documentation.
 register_output_renderer plugins
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Russ Garrett implemented a new Datasette plugin hook called :ref:`register_output_renderer <plugin_register_output_renderer>` (:pr:`441`) which allows plugins to create additional output renderers in addition to Datasette's default ``.json`` and ``.csv``.
+Russ Garrett implemented a new Datasette plugin hook called :ref:`register_output_renderer <plugin_register_output_renderer>` (`#441 <https://github.com/simonw/datasette/pull/441>`__) which allows plugins to create additional output renderers in addition to Datasette's default ``.json`` and ``.csv``.
 
 Russ's in-development `datasette-geo <https://github.com/russss/datasette-geo>`__ plugin includes `an example <https://github.com/russss/datasette-geo/blob/d4cecc020848bbde91e9e17bf352f7c70bc3dccf/datasette_plugin_geo/geojson.py>`__ of this hook being used to output ``.geojson`` automatically converted from SpatiaLite.
 
@@ -2100,7 +1092,7 @@ Russ's in-development `datasette-geo <https://github.com/russss/datasette-geo>`_
 Medium changes
 ~~~~~~~~~~~~~~
 
-- Datasette now conforms to the `Black coding style <https://github.com/python/black>`__ (:pr:`449`) - and has a unit test to enforce this in the future
+- Datasette now conforms to the `Black coding style <https://github.com/python/black>`__ (`#449 <https://github.com/simonw/datasette/pull/449>`__) - and has a unit test to enforce this in the future
 - New :ref:`json_api_table_arguments`:
    - ``?columnname__in=value1,value2,value3`` filter for executing SQL IN queries against a table, see :ref:`table_arguments` (:issue:`433`)
    - ``?columnname__date=yyyy-mm-dd`` filter which returns rows where the spoecified datetime column falls on the specified date (`583b22a <https://github.com/simonw/datasette/commit/583b22aa28e26c318de0189312350ab2688c90b1>`__)
@@ -2121,17 +1113,17 @@ Small changes
 
 - We now show the size of the database file next to the download link (:issue:`172`)
 - New ``/-/databases`` introspection page shows currently connected databases (:issue:`470`)
-- Binary data is no longer displayed on the table and row pages (:pr:`442` - thanks, Russ Garrett)
+- Binary data is no longer displayed on the table and row pages (`#442 <https://github.com/simonw/datasette/pull/442>`__ - thanks, Russ Garrett)
 - New show/hide SQL links on custom query pages (:issue:`415`)
-- The :ref:`extra_body_script <plugin_hook_extra_body_script>` plugin hook now accepts an optional ``view_name`` argument (:pr:`443` - thanks, Russ Garrett)
-- Bumped Jinja2 dependency to 2.10.1 (:pr:`426`)
+- The :ref:`extra_body_script <plugin_hook_extra_body_script>` plugin hook now accepts an optional ``view_name`` argument (`#443 <https://github.com/simonw/datasette/pull/443>`__ - thanks, Russ Garrett)
+- Bumped Jinja2 dependency to 2.10.1 (`#426 <https://github.com/simonw/datasette/pull/426>`__)
 - All table filters are now documented, and documentation is enforced via unit tests (`2c19a27 <https://github.com/simonw/datasette/commit/2c19a27d15a913e5f3dd443f04067169a6f24634>`__)
 - New project guideline: master should stay shippable at all times! (`31f36e1 <https://github.com/simonw/datasette/commit/31f36e1b97ccc3f4387c80698d018a69798b6228>`__)
 - Fixed a bug where ``sqlite_timelimit()`` occasionally failed to clean up after itself (`bac4e01 <https://github.com/simonw/datasette/commit/bac4e01f40ae7bd19d1eab1fb9349452c18de8f5>`__)
 - We no longer load additional plugins when executing pytest (:issue:`438`)
 - Homepage now links to database views if there are less than five tables in a database (:issue:`373`)
 - The ``--cors`` option is now respected by error pages (:issue:`453`)
-- ``datasette publish heroku`` now uses the ``--include-vcs-ignore`` option, which means it works under Travis CI (:pr:`407`)
+- ``datasette publish heroku`` now uses the ``--include-vcs-ignore`` option, which means it works under Travis CI (`#407 <https://github.com/simonw/datasette/pull/407>`__)
 - ``datasette publish heroku`` now publishes using Python 3.6.8 (`666c374 <https://github.com/simonw/datasette/commit/666c37415a898949fae0437099d62a35b1e9c430>`__)
 - Renamed ``datasette publish now`` to ``datasette publish nowv1`` (:issue:`472`)
 - ``datasette publish nowv1`` now accepts multiple ``--alias`` parameters (`09ef305 <https://github.com/simonw/datasette/commit/09ef305c687399384fe38487c075e8669682deb4>`__)
@@ -2203,7 +1195,7 @@ New plugin hooks, improved database view support and an easier way to use more r
 - New ``render_cell`` plugin hook. Plugins can now customize how values are displayed in the HTML tables produced by Datasette's browsable interface. `datasette-json-html <https://github.com/simonw/datasette-json-html>`__ and `datasette-render-images <https://github.com/simonw/datasette-render-images>`__ are two new plugins that use this hook. :ref:`render_cell documentation <plugin_hook_render_cell>`. Closes :issue:`352`
 - New ``extra_body_script`` plugin hook, enabling plugins to provide additional JavaScript that should be added to the page footer. :ref:`extra_body_script documentation <plugin_hook_extra_body_script>`.
 - ``extra_css_urls`` and ``extra_js_urls`` hooks now take additional optional parameters, allowing them to be more selective about which pages they apply to. :ref:`Documentation <plugin_hook_extra_css_urls>`.
-- You can now use the :ref:`sortable_columns metadata setting <table_configuration_sortable_columns>` to explicitly enable sort-by-column in the interface for database views, as well as for specific tables.
+- You can now use the :ref:`sortable_columns metadata setting <metadata_sortable_columns>` to explicitly enable sort-by-column in the interface for database views, as well as for specific tables.
 - The new ``fts_table`` and ``fts_pk`` metadata settings can now be used to :ref:`explicitly configure full-text search for a table or a view <full_text_search_table_or_view>`, even if that table is not directly coupled to the SQLite FTS feature in the database schema itself.
 - Datasette will now use `pysqlite3 <https://github.com/coleifer/pysqlite3>`__ in place of the standard library ``sqlite3`` module if it has been installed in the current environment. This makes it much easier to run Datasette against a more recent version of SQLite, including the just-released `SQLite 3.25.0 <https://www.sqlite.org/releaselog/3_25_0.html>`__ which adds window function support. More details on how to use this in :issue:`360`
 - New mechanism that allows :ref:`plugin configuration options <plugins_configuration>` to be set using ``metadata.json``.
@@ -2271,8 +1263,7 @@ CSV export
 
 Any Datasette table, view or custom SQL query can now be exported as CSV.
 
-.. image:: https://github.com/simonw/datasette-screenshots/blob/0.62/advanced-export.png?raw=true
-   :alt: Advanced export form. You can get the data in different JSON shapes, and CSV options are download file, expand labels and stream all rows.
+.. image:: advanced_export.png
 
 Check out the :ref:`CSV export documentation <csv_export>` for more details, or
 try the feature out on
@@ -2288,7 +1279,7 @@ Foreign key expansions
 ~~~~~~~~~~~~~~~~~~~~~~
 
 When Datasette detects a foreign key reference it attempts to resolve a label
-for that reference (automatically or using the :ref:`table_configuration_label_column` metadata
+for that reference (automatically or using the :ref:`label_columns` metadata
 option) so it can display a link to the associated row.
 
 This expansion is now also available for JSON and CSV representations of the
@@ -2409,10 +1400,7 @@ In addition to the work on facets:
 
   Added new help section::
 
-      datasette --help-config
-
-  ::
-
+      $ datasette --help-config
       Config options:
         default_page_size            Default page size for the table view
                                      (default=100)

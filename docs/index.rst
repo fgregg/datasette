@@ -2,7 +2,7 @@ Datasette
 =========
 
 |PyPI| |Changelog| |Python 3.x| |Tests| |License| |docker:
-datasette| |discord|
+datasette|
 
 .. |PyPI| image:: https://img.shields.io/pypi/v/datasette.svg
    :target: https://pypi.org/project/datasette/
@@ -16,8 +16,6 @@ datasette| |discord|
    :target: https://github.com/simonw/datasette/blob/main/LICENSE
 .. |docker: datasette| image:: https://img.shields.io/badge/docker-datasette-blue
    :target: https://hub.docker.com/r/datasetteproject/datasette
-.. |discord| image:: https://img.shields.io/discord/823971286308356157?label=discord
-   :target: https://datasette.io/discord
 
 *An open source multi-tool for exploring and publishing data*
 
@@ -25,11 +23,11 @@ Datasette is a tool for exploring and publishing data. It helps people take data
 
 Datasette is aimed at data journalists, museum curators, archivists, local governments and anyone else who has data that they wish to share with the world. It is part of a :ref:`wider ecosystem of tools and plugins <ecosystem>` dedicated to making working with structured data as productive as possible.
 
-`Explore a demo <https://fivethirtyeight.datasettes.com/fivethirtyeight>`__, watch `a presentation about the project <https://static.simonwillison.net/static/2018/pybay-datasette/>`__.
+`Explore a demo <https://fivethirtyeight.datasettes.com/fivethirtyeight>`__, watch `a presentation about the project <https://static.simonwillison.net/static/2018/pybay-datasette/>`__ or :ref:`getting_started_glitch`.
 
-Interested in learning Datasette? Start with `the official tutorials <https://datasette.io/tutorials>`__.
+More examples: https://datasette.io/examples
 
-Support questions, feedback? Join the `Datasette Discord <https://datasette.io/discord>`__.
+Support questions, feedback? Join our `GitHub Discussions forum <https://github.com/simonw/datasette/discussions>`__.
 
 Contents
 --------
@@ -39,9 +37,7 @@ Contents
 
    getting_started
    installation
-   configuration
    ecosystem
-   cli-reference
    pages
    publish
    deploying
@@ -60,11 +56,8 @@ Contents
    custom_templates
    plugins
    writing_plugins
-   javascript_plugins
    plugin_hooks
    testing_plugins
    internals
-   events
-   upgrade_guide
    contributing
    changelog
