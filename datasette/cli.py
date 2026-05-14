@@ -151,10 +151,21 @@ def inspect(files, inspect_file, sqlite_extensions):
 
 
 async def inspect_(files, sqlite_extensions):
+    from .database import QueryInterrupted
+
     app = Datasette([], immutables=files, sqlite_extensions=sqlite_extensions)
     data = {}
     for name, database in app.databases.items():
-        counts = await database.table_counts(limit=3600 * 1000)
+        counts = {}
+        for table in await database.table_names():
+            try:
+                result = await database.execute(
+                    f"select count(*) from [{table}]",
+                    custom_time_limit=3600 * 1000,
+                )
+                counts[table] = result.rows[0][0]
+            except (QueryInterrupted, sqlite3.OperationalError, sqlite3.DatabaseError):
+                counts[table] = None
         data[name] = {
             "hash": database.hash,
             "size": database.size,
