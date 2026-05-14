@@ -153,16 +153,22 @@ def inspect(files, inspect_file, sqlite_extensions):
 async def inspect_(files, sqlite_extensions):
     from .database import QueryInterrupted
 
-    app = Datasette([], immutables=files, sqlite_extensions=sqlite_extensions)
+    # database.execute only honors custom_time_limit when it is *shorter*
+    # than ds.sql_time_limit_ms, so we lift the global limit at construction
+    # time. Inspect is a build-step, not a request-path tool — full count(*)
+    # on a multi-million-row table can take seconds.
+    app = Datasette(
+        [],
+        immutables=files,
+        sqlite_extensions=sqlite_extensions,
+        settings={"sql_time_limit_ms": 3600 * 1000},
+    )
     data = {}
     for name, database in app.databases.items():
         counts = {}
         for table in await database.table_names():
             try:
-                result = await database.execute(
-                    f"select count(*) from [{table}]",
-                    custom_time_limit=3600 * 1000,
-                )
+                result = await database.execute(f"select count(*) from [{table}]")
                 counts[table] = result.rows[0][0]
             except (QueryInterrupted, sqlite3.OperationalError, sqlite3.DatabaseError):
                 counts[table] = None
