@@ -59,16 +59,16 @@ def handle_exception(datasette, request, exception):
         if request.path.split("?")[0].endswith(".json"):
             return Response.json(info, status=status, headers=headers)
         else:
-            environment = datasette.get_jinja_environment(request)
-            template = environment.select_template(templates)
+            # Render via datasette.render_template so the error page picks up
+            # extra_css_urls / extra_js_urls / datasette_version / request /
+            # etc. — otherwise stylesheets and scripts configured via
+            # extra_css_urls (e.g. a custom theme) are dropped and the page
+            # looks unstyled.
             return Response.html(
-                await template.render_async(
-                    dict(
-                        info,
-                        urls=datasette.urls,
-                        app_css_hash=datasette.app_css_hash(),
-                        menu_links=lambda: [],
-                    )
+                await datasette.render_template(
+                    templates,
+                    info,
+                    request=request,
                 ),
                 status=status,
                 headers=headers,
