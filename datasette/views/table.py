@@ -250,6 +250,11 @@ async def display_columns_and_rows(
                 # If there's a simple primary key, don't repeat the value as it's
                 # already shown in the link column.
                 continue
+            if link_column and not pks and column == "rowid":
+                # No explicit primary key: the injected Link column already
+                # represents the row's identity via rowid — don't duplicate
+                # the rowid as a separate column.
+                continue
 
             # First try column type render_cell, then plugins
             # pylint: disable=no-member
@@ -363,6 +368,10 @@ async def display_columns_and_rows(
                 "notnull": column_details[pks[0]].notnull,
             }
         else:
+            # No explicit primary key — the injected Link column represents
+            # the rowid, so drop the separate rowid header.
+            if not pks:
+                columns = [col for col in columns if col["name"] != "rowid"]
             first_column = {
                 "name": "Link",
                 "sortable": False,
