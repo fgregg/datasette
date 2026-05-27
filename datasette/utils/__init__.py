@@ -6,6 +6,8 @@ from collections import OrderedDict, namedtuple, Counter
 import copy
 import dataclasses
 import base64
+import datetime
+import decimal
 import hashlib
 import inspect
 import json
@@ -208,6 +210,12 @@ class CustomJSONEncoder(json.JSONEncoder):
             return tuple(obj)
         if isinstance(obj, sqlite3.Cursor):
             return list(obj)
+        # Temporal / decimal values, as returned natively by backends like
+        # DuckDB (sqlite3 returns these as strings, so SQLite never hit this).
+        if isinstance(obj, (datetime.date, datetime.datetime, datetime.time)):
+            return obj.isoformat()
+        if isinstance(obj, decimal.Decimal):
+            return float(obj)
         if isinstance(obj, bytes):
             # Does it encode to utf8?
             try:
