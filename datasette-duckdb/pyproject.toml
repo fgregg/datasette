@@ -1,0 +1,13 @@
+[project]
+name = "datasette-duckdb"
+version = "0.1a0"
+description = "DuckDB backend for Datasette (proof of concept)"
+requires-python = ">=3.9"
+dependencies = ["datasette", "duckdb>=1.0"]
+
+[project.entry-points.datasette]
+duckdb = "datasette_duckdb"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
