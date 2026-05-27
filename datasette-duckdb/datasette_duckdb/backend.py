@@ -15,7 +15,10 @@ from datasette.utils import Column, CustomRow
 
 
 # Datasette generates `:name` / `:p0` placeholders; DuckDB wants `$name`.
-_PARAM_RE = re.compile(r":(\w+)")
+# The negative lookbehind avoids matching the second `:` of a `::` cast
+# (e.g. `day::date`), which is common in DuckDB SQL. Still naive about `:`
+# inside string literals.
+_PARAM_RE = re.compile(r"(?<!:):(\w+)")
 
 
 def _to_duckdb_sql(sql):
