@@ -3,7 +3,6 @@ import urllib
 from datasette import hookimpl
 from datasette.database import QueryInterrupted
 from datasette.utils import (
-    escape_sqlite,
     path_with_added_args,
     path_with_removed_args,
     sqlite3,
@@ -96,6 +95,10 @@ class Facet:
             self.ds.get_database(self.database).backend.features, feature
         )
 
+    def _escape(self, name):
+        # Quote an identifier using this database's backend dialect.
+        return self.ds.get_database(self.database).dialect.escape_identifier(name)
+
     def get_configs(self):
         configs = load_facet_configs(self.request, self.table_config)
         return configs.get(self.type) or []
@@ -172,7 +175,7 @@ class ColumnFacet(Facet):
                 group by value
                 limit {limit}
             """.format(
-                column=escape_sqlite(column),
+                column=self._escape(column),
                 sql=self.sql,
                 limit=facet_size + 1,
                 suggest_consider=self.suggest_consider,
@@ -238,7 +241,7 @@ class ColumnFacet(Facet):
                 )
                 where {col} is not null
                 group by {col} order by count desc, value limit {limit}
-            """.format(col=escape_sqlite(column), sql=self.sql, limit=facet_size + 1)
+            """.format(col=self._escape(column), sql=self.sql, limit=facet_size + 1)
             try:
                 facet_rows_results = await self.ds.execute(
                     self.database,
@@ -328,7 +331,7 @@ class ArrayFacet(Facet):
                 from limited
                 where {column} is not null and {column} != ''
             """.format(
-                column=escape_sqlite(column),
+                column=self._escape(column),
                 sql=self.sql,
                 suggest_consider=self.suggest_consider,
             )
@@ -354,7 +357,7 @@ class ArrayFacet(Facet):
                                 "and {column} != '' "
                                 "and json_array_length({column}) > 0 "
                                 "limit 100"
-                            ).format(column=escape_sqlite(column), sql=self.sql),
+                            ).format(column=self._escape(column), sql=self.sql),
                             self.params,
                             truncate=False,
                             custom_time_limit=self.ds.setting(
@@ -417,7 +420,7 @@ class ArrayFacet(Facet):
                 order by
                     count(*) desc, value limit {limit}
             """.format(
-                col=escape_sqlite(column),
+                col=self._escape(column),
                 sql=self.sql,
                 limit=facet_size + 1,
             )
@@ -489,7 +492,7 @@ class DateFacet(Facet):
                 select date({column}) from (
                     select * from ({sql}) limit 100
                 ) where {column} glob "????-??-*"
-            """.format(column=escape_sqlite(column), sql=self.sql)
+            """.format(column=self._escape(column), sql=self.sql)
             try:
                 results = await self.ds.execute(
                     self.database,
@@ -535,7 +538,7 @@ class DateFacet(Facet):
                 )
                 where date({col}) is not null
                 group by date({col}) order by count desc, value limit {limit}
-            """.format(col=escape_sqlite(column), sql=self.sql, limit=facet_size + 1)
+            """.format(col=self._escape(column), sql=self.sql, limit=facet_size + 1)
             try:
                 facet_rows_results = await self.ds.execute(
                     self.database,

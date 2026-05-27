@@ -25,7 +25,6 @@ from datasette.utils import (
     format_bytes,
     make_slot_function,
     tilde_encode,
-    escape_sqlite,
     filters_should_redirect,
     is_url,
     path_from_row_pks,
@@ -901,7 +900,7 @@ async def _sortable_columns_for_table(datasette, database_name, table_name, use_
     return sortable_columns
 
 
-async def _sort_order(table_metadata, sortable_columns, request, order_by):
+async def _sort_order(table_metadata, sortable_columns, request, order_by, dialect):
     sort = request.args.get("_sort")
     sort_desc = request.args.get("_sort_desc")
 
@@ -918,13 +917,13 @@ async def _sort_order(table_metadata, sortable_columns, request, order_by):
         if sort not in sortable_columns:
             raise DatasetteError(f"Cannot sort table by {sort}", status=400)
 
-        order_by = escape_sqlite(sort)
+        order_by = dialect.escape_identifier(sort)
 
     if sort_desc:
         if sort_desc not in sortable_columns:
             raise DatasetteError(f"Cannot sort table by {sort_desc}", status=400)
 
-        order_by = f"{escape_sqlite(sort_desc)} desc"
+        order_by = f"{dialect.escape_identifier(sort_desc)} desc"
 
     return sort, sort_desc, order_by
 
@@ -1161,10 +1160,13 @@ async def table_view_data(
     pks = await db.primary_keys(table_name)
     table_columns = await db.table_columns(table_name)
 
+    # Quote identifiers using the backend's dialect
+    escape = db.dialect.escape_identifier
+
     # Take ?_col= and ?_nocol= into account
     specified_columns = await _columns_to_select(table_columns, pks, request)
-    select_specified_columns = ", ".join(escape_sqlite(t) for t in specified_columns)
-    select_all_columns = ", ".join(escape_sqlite(t) for t in table_columns)
+    select_specified_columns = ", ".join(escape(t) for t in specified_columns)
+    select_all_columns = ", ".join(escape(t) for t in table_columns)
 
     # rowid tables (no specified primary key) need a different SELECT - but
     # only on a backend that provides a stable implicit rowid. A keyless table
@@ -1179,7 +1181,7 @@ async def table_view_data(
         order_by = "rowid"
         order_by_pks = "rowid"
     else:
-        order_by_pks = ", ".join([escape_sqlite(pk) for pk in pks])
+        order_by_pks = ", ".join([escape(pk) for pk in pks])
         order_by = order_by_pks
 
     if use_offset:
@@ -1234,11 +1236,11 @@ async def table_view_data(
     )
 
     sort, sort_desc, order_by = await _sort_order(
-        table_metadata, sortable_columns, request, order_by
+        table_metadata, sortable_columns, request, order_by, db.dialect
     )
 
     from_sql = "from {table_name} {where}".format(
-        table_name=escape_sqlite(table_name),
+        table_name=escape(table_name),
         where=(
             ("where {} ".format(" and ".join(where_clauses))) if where_clauses else ""
         ),
@@ -1297,7 +1299,7 @@ async def table_view_data(
     sql_no_order_no_limit = (
         "select {select_all_columns} from {table_name} {where}".format(
             select_all_columns=select_all_columns,
-            table_name=escape_sqlite(table_name),
+            table_name=escape(table_name),
             where=where_clause,
         )
     )
@@ -1305,7 +1307,7 @@ async def table_view_data(
     # This is the SQL that populates the main table on the page
     sql = "select {select_specified_columns} from {table_name} {where}{order_by} limit {page_size}{offset}".format(
         select_specified_columns=select_specified_columns,
-        table_name=escape_sqlite(table_name),
+        table_name=escape(table_name),
         where=where_clause,
         order_by=order_by,
         page_size=page_size + 1,

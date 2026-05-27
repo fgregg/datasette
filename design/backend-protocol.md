@@ -353,12 +353,18 @@ Tracks the actual extraction on branch `backend-abstraction`. Update as slices l
   SQL and identifier quoting. `Filters` gates
   operators on `features`, and `facets.py` now gates `ArrayFacet` on
   `supports_json` (it no-ops when the backend lacks it; the global
-  `detect_json1()` registration gate is gone). **Still to convert:** the ~39
-  remaining `escape_sqlite` call sites; `DateFacet` (its `suggest` uses `glob`,
-  its results use `date()` — needs `supports_glob` / a date capability); the
+  `detect_json1()` registration gate is gone). The view-layer query SQL now
+  quotes via the dialect: `table.py`, `facets.py` and `row.py` use
+  `escape_identifier` (no direct `escape_sqlite`). **Still to convert / decide:**
+  the `Filter` operators (`InFilter`/`NotInFilter` still use `escape_sqlite`;
+  routing them through the dialect needs a `Filter.where_clause` signature change
+  — a plugin-API decision); `DateFacet` (its `suggest` uses `glob`, results use
+  `date()` — needs `supports_glob` / a date capability); the
   `sqlite3.OperationalError` catches in facet `suggest()` (backend-specific error
   types); and per-dialect SQL for operators a backend does differently (`date()`,
-  FTS `match`) rather than just hiding them.
+  FTS `match`) rather than just hiding them. The remaining `escape_sqlite` in
+  `utils` (introspection helpers), `app.py` (crossdb/internal) and `inspect.py`
+  is SQLite-specific by design and stays with the SQLite backend/introspector.
 - ✅ Seam 7 — `rowid` / keyless-table pagination. `use_rowid` is gated on
   `supports_rowid`; a keyless table on a no-rowid backend uses the
   `OffsetPaginator` (like a view). Row links are suppressed when there's no row
