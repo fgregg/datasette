@@ -87,6 +87,16 @@ class DuckDBDialect(Dialect):
             params = {k: v for k, v in params.items() if k in used}
         return new_sql, params
 
+    def fts_search_clause(self, *, fts_table, fts_pk, column, param, raw):
+        # The DuckDB fts extension indexes a base table into schema
+        # fts_main_<table>, queried via match_bm25(doc_id, query[, fields]).
+        macro = self.escape_identifier("fts_main_" + fts_table) + ".match_bm25"
+        pk = self.escape_identifier(fts_pk)
+        if column is None:
+            return f"{macro}({pk}, :{param}) is not null"
+        col_literal = "'" + column.replace("'", "''") + "'"
+        return f"{macro}({pk}, :{param}, fields := {col_literal}) is not null"
+
 
 class DuckDBBackend(Backend):
     name = "duckdb"
@@ -95,7 +105,7 @@ class DuckDBBackend(Backend):
 
     features = Features(
         supports_rowid=False,  # no stable implicit rowid -> offset pagination
-        supports_fts=False,
+        supports_fts=True,  # via the fts extension + match_bm25 (per-table index)
         supports_json=False,  # DuckDB has JSON, but not SQLite's json_each() shape
         supports_glob=False,
         supports_load_extension=True,
@@ -196,7 +206,8 @@ class DuckDBIntrospector(Introspector):
     async def table_exists(self, table):
         results = await self.db.execute(
             "select 1 from information_schema.tables "
-            "where table_name = :t and table_type = 'BASE TABLE'",
+            "where table_schema = 'main' and table_name = :t "
+            "and table_type = 'BASE TABLE'",
             {"t": table},
         )
         return bool(results.rows)
@@ -204,7 +215,8 @@ class DuckDBIntrospector(Introspector):
     async def view_exists(self, view):
         results = await self.db.execute(
             "select 1 from information_schema.tables "
-            "where table_name = :t and table_type = 'VIEW'",
+            "where table_schema = 'main' and table_name = :t "
+            "and table_type = 'VIEW'",
             {"t": view},
         )
         return bool(results.rows)
@@ -212,7 +224,8 @@ class DuckDBIntrospector(Introspector):
     async def table_columns(self, table):
         results = await self.db.execute(
             "select column_name from information_schema.columns "
-            "where table_name = :t order by ordinal_position",
+            "where table_schema = 'main' and table_name = :t "
+            "order by ordinal_position",
             {"t": table},
         )
         return [r[0] for r in results.rows]
@@ -220,7 +233,8 @@ class DuckDBIntrospector(Introspector):
     async def primary_keys(self, table):
         results = await self.db.execute(
             "select constraint_column_names from duckdb_constraints() "
-            "where table_name = :t and constraint_type = 'PRIMARY KEY'",
+            "where schema_name = 'main' and table_name = :t "
+            "and constraint_type = 'PRIMARY KEY'",
             {"t": table},
         )
         if results.rows:
@@ -232,7 +246,8 @@ class DuckDBIntrospector(Introspector):
         results = await self.db.execute(
             "select ordinal_position, column_name, data_type, is_nullable, "
             "column_default from information_schema.columns "
-            "where table_name = :t order by ordinal_position",
+            "where table_schema = 'main' and table_name = :t "
+            "order by ordinal_position",
             {"t": table},
         )
         columns = []
@@ -262,7 +277,8 @@ class DuckDBIntrospector(Introspector):
         results = await self.db.execute(
             "select constraint_column_names, referenced_table, "
             "referenced_column_names from duckdb_constraints() "
-            "where table_name = :t and constraint_type = 'FOREIGN KEY'",
+            "where schema_name = 'main' and table_name = :t "
+            "and constraint_type = 'FOREIGN KEY'",
             {"t": table},
         )
         fks = []
@@ -283,7 +299,7 @@ class DuckDBIntrospector(Introspector):
         results = await self.db.execute(
             "select table_name, constraint_column_names, referenced_table, "
             "referenced_column_names from duckdb_constraints() "
-            "where constraint_type = 'FOREIGN KEY'"
+            "where schema_name = 'main' and constraint_type = 'FOREIGN KEY'"
         )
         for table_name, cols, other_table, other_cols in results.rows:
             if len(cols) != 1 or len(other_cols) != 1:
@@ -300,7 +316,15 @@ class DuckDBIntrospector(Introspector):
         return result
 
     async def fts_table(self, table):
-        return None
+        # An fts index on <table> lives in schema fts_main_<table>. Datasette
+        # uses the returned name as the FTS resource; for DuckDB that's the base
+        # table itself (the dialect builds the fts_main_<table>.match_bm25 call).
+        results = await self.db.execute(
+            "select schema_name from information_schema.schemata "
+            "where schema_name = :s",
+            {"s": "fts_main_" + table},
+        )
+        return table if results.rows else None
 
     async def hidden_table_names(self):
         return []
