@@ -12,6 +12,7 @@ import sqlite_utils
 
 from ..utils import (
     detect_fts,
+    detect_json1,
     detect_primary_keys,
     detect_spatialite,
     escape_sqlite,
@@ -39,7 +40,9 @@ class SqliteBackend(Backend):
     features = Features(
         supports_rowid=True,
         supports_fts=True,
-        supports_json=True,
+        # Reflects whether this SQLite build has the JSON1 extension, matching
+        # the historical detect_json1() gate on the array-contains filters.
+        supports_json=detect_json1(),
         supports_glob=True,
         supports_load_extension=True,
         supports_attach=True,

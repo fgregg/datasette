@@ -3,7 +3,7 @@ from datasette.resources import DatabaseResource
 from datasette.views.base import DatasetteError
 from datasette.utils.asgi import BadRequest
 import json
-from .utils import detect_json1, escape_sqlite, path_with_removed_args
+from .utils import escape_sqlite, path_with_removed_args
 
 
 @hookimpl(specname="filters_from_request")
@@ -317,24 +317,22 @@ class Filters:
             InFilter(),
             NotInFilter(),
         ]
-        + (
-            [
-                TemplatedFilter(
-                    "arraycontains",
-                    "array contains",
-                    """:{p} in (select value from json_each([{t}].[{c}]))""",
-                    '{c} contains "{v}"',
-                ),
-                TemplatedFilter(
-                    "arraynotcontains",
-                    "array does not contain",
-                    """:{p} not in (select value from json_each([{t}].[{c}]))""",
-                    '{c} does not contain "{v}"',
-                ),
-            ]
-            if detect_json1()
-            else []
-        )
+        + [
+            # Catalog always lists these; only offered to a backend that
+            # advertises supports_json (see _feature_gated).
+            TemplatedFilter(
+                "arraycontains",
+                "array contains",
+                """:{p} in (select value from json_each([{t}].[{c}]))""",
+                '{c} contains "{v}"',
+            ),
+            TemplatedFilter(
+                "arraynotcontains",
+                "array does not contain",
+                """:{p} not in (select value from json_each([{t}].[{c}]))""",
+                '{c} does not contain "{v}"',
+            ),
+        ]
         + [
             TemplatedFilter(
                 "date", "date", 'date("{c}") = :{p}', '"{c}" is on date {v}'
@@ -365,14 +363,34 @@ class Filters:
             ),
         ]
     )
-    _filters_by_key = {f.key: f for f in _filters}
+    # An operator is only offered when the backend advertises the matching
+    # capability flag; operators absent from this map are always available.
+    _feature_gated = {
+        "glob": "supports_glob",
+        "arraycontains": "supports_json",
+        "arraynotcontains": "supports_json",
+    }
 
-    def __init__(self, pairs):
+    def __init__(self, pairs, features=None):
         self.pairs = pairs
+        self.features = features
+        if features is None:
+            # No backend supplied: offer the full catalog (used by tests and
+            # any caller that doesn't care about capabilities).
+            enabled = list(self._filters)
+        else:
+            enabled = [
+                f
+                for f in self._filters
+                if self._feature_gated.get(f.key) is None
+                or getattr(features, self._feature_gated[f.key])
+            ]
+        self._enabled_filters = enabled
+        self._filters_by_key = {f.key: f for f in enabled}
 
     def lookups(self):
         """Yields (lookup, display, no_argument) pairs"""
-        for filter in self._filters:
+        for filter in self._enabled_filters:
             yield filter.key, filter.display, filter.no_argument
 
     def human_description_en(self, extra=None):

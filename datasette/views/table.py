@@ -1200,8 +1200,9 @@ async def table_view_data(
             for v in request.args.getlist(key):
                 filter_args.append((key, v))
 
-    # Build where clauses from query string arguments
-    filters = Filters(sorted(filter_args))
+    # Build where clauses from query string arguments. The backend's feature
+    # flags decide which operators are offered (e.g. glob, array-contains).
+    filters = Filters(sorted(filter_args), features=db.backend.features)
     where_clauses, params = filters.build_where_clauses(table_name)
 
     # Execute filters_from_request plugin hooks - including the default

@@ -333,7 +333,9 @@ Tracks the actual extraction on branch `backend-abstraction`. Update as slices l
   including `label_column_for_table`'s column+uniqueness lookup
   (`Introspector.column_details_with_uniqueness`)
 - ✅ Seam 10 (partial) — query time-limit now lives in `SqliteBackend.execute_query`
-- ✅ Seam 11 — `Features` defined (`SqliteBackend.features`); **not yet consumed**
+- ✅ Seam 11 — `Features` defined (`SqliteBackend.features`) **and now consumed**:
+  `Filters` gates `glob` on `supports_glob` and the array-contains operators on
+  `supports_json` (which now mirrors `detect_json1()` for SQLite)
 
 **Residuals — still SQLite-coupled, must be extracted before a DuckDB backend works:**
 - ⬜ **`Database.table_counts`** — composed of already-abstracted `execute()` /
@@ -345,10 +347,12 @@ Tracks the actual extraction on branch `backend-abstraction`. Update as slices l
 - 🟡 Seams 6/8/9 — `Dialect` started: `escape_identifier` + `keyset_after_sql`
   live on `Dialect`/`SqliteDialect` (`backend.dialect`, `Database.dialect`);
   `utils.compound_keys_after_sql` is now a thin alias to the dialect, and
-  `table.py` pagination uses `db.dialect.keyset_after_sql`. **Still to convert:**
-  the ~39 remaining `escape_sqlite` call sites, and the filter/facet operator
-  fragments (`glob`, FTS `match`, `json_each`, `date()`) — the latter is where
-  `Features` (`supports_glob`/`supports_fts`/`supports_json`) finally gets read.
+  `table.py` pagination uses `db.dialect.keyset_after_sql`. `Filters` now takes a
+  `features` arg and gates operators on it (see seam 11). **Still to convert:**
+  the ~39 remaining `escape_sqlite` call sites; the same `Features` gating in
+  `facets.py` (array/date facets still call `detect_json1()` directly); and
+  per-dialect SQL for operators a backend supports differently (`date()`, FTS
+  `match`) rather than just hiding them.
 - ⬜ Seam 7 — `rowid` / keyless-table pagination fallback (gated on `supports_rowid`).
 
 ## 8. Open questions
