@@ -15,7 +15,78 @@ on. This module currently covers audit seams 1 (connection/execution) and 11
 remain in their original locations and are the next extraction steps.
 """
 
+import re
 from dataclasses import dataclass
+
+
+_NAME_RE = re.compile(r"\w+")
+
+
+def rewrite_named_parameters(sql, render):
+    """Rewrite ``:name`` placeholders in *sql*, calling ``render(name)`` for each.
+
+    Datasette speaks the ``:name`` parameter style (SQLite's). A backend whose
+    driver wants a different style converts at its boundary. Doing that with a
+    plain regex is wrong because ``:`` is meaningful inside string literals,
+    comments and ``::`` casts; this walks the SQL lexically so only genuine
+    placeholders are rewritten.
+
+    Returns ``(new_sql, names)`` — ``names`` is the placeholder names in order.
+    """
+    out = []
+    names = []
+    i = 0
+    n = len(sql)
+    while i < n:
+        c = sql[i]
+        nxt = sql[i + 1] if i + 1 < n else ""
+        if c == "'" or c == '"':
+            # String literal / quoted identifier; "" or '' escapes the quote
+            quote = c
+            out.append(c)
+            i += 1
+            while i < n:
+                ch = sql[i]
+                if ch == quote:
+                    if i + 1 < n and sql[i + 1] == quote:
+                        out.append(quote * 2)
+                        i += 2
+                        continue
+                    out.append(quote)
+                    i += 1
+                    break
+                out.append(ch)
+                i += 1
+        elif c == "-" and nxt == "-":
+            # Line comment
+            j = sql.find("\n", i)
+            j = n if j == -1 else j
+            out.append(sql[i:j])
+            i = j
+        elif c == "/" and nxt == "*":
+            # Block comment
+            j = sql.find("*/", i + 2)
+            j = n if j == -1 else j + 2
+            out.append(sql[i:j])
+            i = j
+        elif c == ":" and nxt == ":":
+            # Cast operator, not a placeholder
+            out.append("::")
+            i += 2
+        elif c == ":":
+            m = _NAME_RE.match(sql, i + 1)
+            if m:
+                name = m.group(0)
+                out.append(render(name))
+                names.append(name)
+                i += 1 + len(name)
+            else:
+                out.append(c)
+                i += 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out), names
 
 
 @dataclass(frozen=True)
@@ -51,6 +122,15 @@ class Dialect:
     def escape_identifier(self, name: str) -> str:
         """Quote a table/column identifier for this dialect."""
         raise NotImplementedError
+
+    def adapt_parameters(self, sql, params):
+        """Adapt ``:name``-style SQL + params to this backend's parameter style.
+
+        Identity by default (SQLite's driver speaks ``:name``). Backends whose
+        driver wants a different style override this, typically using
+        :func:`rewrite_named_parameters`. Returns ``(sql, params)``.
+        """
+        return sql, params
 
     def keyset_after_sql(self, pks, start_index: int = 0) -> str:
         """Keyset-pagination WHERE fragment for "rows ordered after this one".
