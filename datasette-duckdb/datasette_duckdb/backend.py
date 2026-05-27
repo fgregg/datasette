@@ -4,25 +4,17 @@ A DuckDB backend for Datasette, implemented against the backend seams in
 
 Proof of concept: read-only analytic browsing. Known gaps (tracked as we go):
 - No query time limit yet (DuckDB has no progress handler; needs interrupt()).
-- Parameter rewriting (:name -> $name) is naive about ':' inside string literals.
 - Foreign keys / FTS / table definitions are not introspected yet.
 """
 
-import re
-
-from datasette.backends import Backend, Dialect, Features, Introspector
+from datasette.backends import (
+    Backend,
+    Dialect,
+    Features,
+    Introspector,
+    rewrite_named_parameters,
+)
 from datasette.utils import Column, CustomRow
-
-
-# Datasette generates `:name` / `:p0` placeholders; DuckDB wants `$name`.
-# The negative lookbehind avoids matching the second `:` of a `::` cast
-# (e.g. `day::date`), which is common in DuckDB SQL. Still naive about `:`
-# inside string literals.
-_PARAM_RE = re.compile(r"(?<!:):(\w+)")
-
-
-def _to_duckdb_sql(sql):
-    return _PARAM_RE.sub(r"$\1", sql)
 
 
 def _python_type(duckdb_type):
@@ -40,6 +32,17 @@ class DuckDBDialect(Dialect):
     def escape_identifier(self, name):
         # ANSI double-quote quoting, doubling any embedded quotes
         return '"{}"'.format(str(name).replace('"', '""'))
+
+    def adapt_parameters(self, sql, params):
+        # DuckDB's driver doesn't accept `:name`; convert to `$name` (lexically,
+        # so `::` casts and `:` inside strings/comments are left alone). Also
+        # drop params the query doesn't reference -- DuckDB errors on excess
+        # named params where SQLite silently ignores them.
+        new_sql, names = rewrite_named_parameters(sql, lambda name: "$" + name)
+        if isinstance(params, dict):
+            used = set(names)
+            params = {k: v for k, v in params.items() if k in used}
+        return new_sql, params
 
 
 class DuckDBBackend(Backend):
@@ -88,13 +91,7 @@ class DuckDBBackend(Backend):
         from datasette.database import Results, QueryError
 
         # TODO: enforce time_limit_ms via conn.interrupt() from a watchdog.
-        duck_sql = _to_duckdb_sql(sql)
-        # DuckDB rejects params the query doesn't reference; SQLite ignores
-        # them. Datasette passes a dict of all candidate params, so filter to
-        # the ones actually used by this query.
-        if isinstance(params, dict):
-            used = set(_PARAM_RE.findall(sql))
-            params = {k: v for k, v in params.items() if k in used}
+        duck_sql, params = self.dialect.adapt_parameters(sql, params)
         cursor = conn.cursor()
         try:
             if params:
