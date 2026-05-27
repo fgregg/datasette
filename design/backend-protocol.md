@@ -344,7 +344,14 @@ Tracks the actual extraction on branch `backend-abstraction`. Update as slices l
   directly. Error-type mapping should come from the backend (seam 1 follow-up).
 - ⬜ **`validate_sql_select` + `allowed_pragmas`** (`utils`) — SQLite-tuned SQL
   allowlist still called from views; needs per-dialect rules (seam 10).
-- ⬜ Seam 3 — row representation still `sqlite3.Row` (renderer + encoder isinstance checks).
+- ✅ Seam 3 — row representation. The renderer no longer checks for `sqlite3.Row`;
+  it distinguishes dict-like from positional rows, so `sqlite3.Row`, `CustomRow`,
+  and plain tuples all render. `CustomRow` (in `utils`) is the neutral dual-access
+  (index + key) row type a backend can return. (The `CustomJSONEncoder`
+  `sqlite3.Row`/`Cursor` case stays — it only matters when the SQLite backend's
+  own row type reaches JSON; other backends return JSON-encodable rows. Backend
+  contract: `execute_query` returns rows supporting both `row[i]` and
+  `row["col"]`.)
 - 🟡 Seams 6/8/9 — `Dialect` started: `escape_identifier` + `keyset_after_sql`
   live on `Dialect`/`SqliteDialect` (`backend.dialect`, `Database.dialect`);
   `utils.compound_keys_after_sql` is now a thin alias to the dialect. Pagination
