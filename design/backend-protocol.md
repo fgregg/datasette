@@ -322,6 +322,34 @@ class Database:
 
 Step 1 is the real test of this whole design and should be the first PR.
 
+## 7a. Progress & residuals (living checklist)
+
+Tracks the actual extraction on branch `backend-abstraction`. Update as slices land.
+
+**Done (SQLite routed through the protocol, tests green):**
+- ✅ Seam 1 — `connect` + `execute_query` → `SqliteBackend`
+- ✅ Seam 2 — `prepare_connection` → `SqliteBackend` (and `Datasette._prepare_connection` removed; hook-firing is backend-owned)
+- ✅ Seam 5 — `sqlite_master`/`PRAGMA` introspection → `SqliteIntrospector`
+- ✅ Seam 10 (partial) — query time-limit now lives in `SqliteBackend.execute_query`
+- ✅ Seam 11 — `Features` defined (`SqliteBackend.features`); **not yet consumed**
+
+**Residuals — still SQLite-coupled, must be extracted before a DuckDB backend works:**
+- ⬜ **`Database.label_column_for_table`** — *not yet moved.* The label-picking
+  heuristic is backend-agnostic, but its inner `column_details(conn)` uses
+  `sqlite_utils.Database(conn)` to read `columns_dict` + unique `indexes`. Needs an
+  `Introspector` method exposing per-column type + uniqueness (e.g.
+  `column_details_with_uniqueness(table) -> {name: (type, is_unique)}`); the
+  heuristic then stays on `Database` or moves wholesale. Belongs with seam 5.
+- ⬜ **`Database.table_counts`** — composed of already-abstracted `execute()` /
+  `table_names()`, but still catches `sqlite3.OperationalError/DatabaseError`
+  directly. Error-type mapping should come from the backend (seam 1 follow-up).
+- ⬜ **`validate_sql_select` + `allowed_pragmas`** (`utils`) — SQLite-tuned SQL
+  allowlist still called from views; needs per-dialect rules (seam 10).
+- ⬜ Seam 3 — row representation still `sqlite3.Row` (renderer + encoder isinstance checks).
+- ⬜ Seams 6/8/9 — `Dialect`: `escape_sqlite` quoting + filter/facet operator
+  fragments. The step that finally *consumes* `Features`.
+- ⬜ Seam 7 — `rowid` / keyless-table pagination fallback (gated on `supports_rowid`).
+
 ## 8. Open questions
 
 - **rowid / keyless pagination** (seam 7) — the `supports_rowid=False` fallback
