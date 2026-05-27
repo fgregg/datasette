@@ -21,13 +21,13 @@ from .utils import (
     get_all_foreign_keys,
     get_outbound_foreign_keys,
     md5_not_usedforsecurity,
-    sqlite_timelimit,
     sqlite3,
     table_columns,
     table_column_details,
 )
 from .utils.sqlite import sqlite_version
 from .inspect import inspect_hash
+from .backends.sqlite import SqliteBackend
 
 connections = threading.local()
 
@@ -55,7 +55,9 @@ class Database:
         memory_name=None,
         mode=None,
         is_temp_disk=False,
+        backend=None,
     ):
+        self.backend = backend or SqliteBackend()
         self.name = None
         self._thread_local_id = f"x{self._thread_local_id_counter}"
         Database._thread_local_id_counter += 1
@@ -133,40 +135,7 @@ class Database:
             return "db"
 
     def connect(self, write=False):
-        extra_kwargs = {}
-        if write:
-            extra_kwargs["isolation_level"] = "IMMEDIATE"
-        if self.memory_name:
-            uri = "file:{}?mode=memory&cache=shared".format(self.memory_name)
-            conn = sqlite3.connect(
-                uri, uri=True, check_same_thread=False, **extra_kwargs
-            )
-            if not write:
-                conn.execute("PRAGMA query_only=1")
-            return conn
-        if self.is_memory:
-            return sqlite3.connect(":memory:", uri=True)
-
-        # mode=ro or immutable=1?
-        if self.is_mutable:
-            qs = "?mode=ro"
-            if self.ds.nolock:
-                qs += "&nolock=1"
-        else:
-            qs = "?immutable=1"
-        assert not (write and not self.is_mutable)
-        if write:
-            qs = ""
-        if self.mode is not None:
-            qs = f"?mode={self.mode}"
-        conn = sqlite3.connect(
-            f"file:{self.path}{qs}", uri=True, check_same_thread=False, **extra_kwargs
-        )
-        self._all_file_connections.append(conn)
-        if self.is_temp_disk and not self._wal_enabled:
-            conn.execute("PRAGMA journal_mode=WAL")
-            self._wal_enabled = True
-        return conn
+        return self.backend.connect(self, write=write)
 
     def close(self):
         """Release all resources held by this database.
@@ -491,42 +460,21 @@ class Database:
         self._check_not_closed()
         page_size = page_size or self.ds.page_size
 
+        time_limit_ms = self.ds.sql_time_limit_ms
+        if custom_time_limit and custom_time_limit < time_limit_ms:
+            time_limit_ms = custom_time_limit
+
         def sql_operation_in_thread(conn):
-            time_limit_ms = self.ds.sql_time_limit_ms
-            if custom_time_limit and custom_time_limit < time_limit_ms:
-                time_limit_ms = custom_time_limit
-
-            with sqlite_timelimit(conn, time_limit_ms):
-                try:
-                    cursor = conn.cursor()
-                    cursor.execute(sql, params if params is not None else {})
-                    max_returned_rows = self.ds.max_returned_rows
-                    if max_returned_rows == page_size:
-                        max_returned_rows += 1
-                    if max_returned_rows and truncate:
-                        rows = cursor.fetchmany(max_returned_rows + 1)
-                        truncated = len(rows) > max_returned_rows
-                        rows = rows[:max_returned_rows]
-                    else:
-                        rows = cursor.fetchall()
-                        truncated = False
-                except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
-                    if e.args == ("interrupted",):
-                        raise QueryInterrupted(e, sql, params)
-                    if log_sql_errors:
-                        sys.stderr.write(
-                            "ERROR: conn={}, sql = {}, params = {}: {}\n".format(
-                                conn, repr(sql), params, e
-                            )
-                        )
-                        sys.stderr.flush()
-                    raise
-
-            if truncate:
-                return Results(rows, truncated, cursor.description)
-
-            else:
-                return Results(rows, False, cursor.description)
+            return self.backend.execute_query(
+                conn,
+                sql,
+                params,
+                time_limit_ms=time_limit_ms,
+                max_returned_rows=self.ds.max_returned_rows,
+                page_size=page_size,
+                truncate=truncate,
+                log_sql_errors=log_sql_errors,
+            )
 
         with trace("sql", database=self.name, sql=sql.strip(), params=params):
             results = await self.execute_fn(sql_operation_in_thread)
