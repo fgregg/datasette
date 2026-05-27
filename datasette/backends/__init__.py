@@ -132,6 +132,18 @@ class Dialect:
         """
         return sql, params
 
+    def fts_search_clause(self, *, fts_table, fts_pk, column, param, raw):
+        """Return a WHERE-clause fragment for a full-text search.
+
+        ``column`` is ``None`` to search the whole FTS resource, or a single
+        column name. ``param`` is the bind-parameter name (used as ``:param``).
+        ``raw`` selects raw vs escaped query syntax. Full-text search is
+        engine-specific (SQLite ``MATCH`` vs DuckDB ``match_bm25`` etc.), so
+        there is no portable default — a backend that advertises
+        ``supports_fts`` must implement this.
+        """
+        raise NotImplementedError
+
     def keyset_after_sql(self, pks, start_index: int = 0) -> str:
         """Keyset-pagination WHERE fragment for "rows ordered after this one".
 

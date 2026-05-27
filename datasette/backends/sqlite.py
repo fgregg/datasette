@@ -31,6 +31,20 @@ class SqliteDialect(Dialect):
     def escape_identifier(self, name):
         return escape_sqlite(name)
 
+    def fts_search_clause(self, *, fts_table, fts_pk, column, param, raw):
+        match = f":{param}" if raw else f"escape_fts(:{param})"
+        if column is None:
+            return "{pk} in (select rowid from {t} where {t} match {m})".format(
+                pk=self.escape_identifier(fts_pk),
+                t=self.escape_identifier(fts_table),
+                m=match,
+            )
+        return "rowid in (select rowid from {t} where {c} match {m})".format(
+            t=self.escape_identifier(fts_table),
+            c=self.escape_identifier(column),
+            m=match,
+        )
+
 
 class SqliteBackend(Backend):
     name = "sqlite"
