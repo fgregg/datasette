@@ -62,6 +62,46 @@ class SqliteBackend(Backend):
             db._wal_enabled = True
         return conn
 
+    def prepare_connection(self, conn, datasette, database_name):
+        # Imported lazily to avoid a circular import at module load time:
+        # app imports database imports this module.
+        from ..app import INTERNAL_DB_NAME, SQLITE_LIMIT_ATTACHED
+        from ..plugins import pm
+
+        conn.row_factory = sqlite3.Row
+        conn.text_factory = lambda x: str(x, "utf-8", "replace")
+        if datasette.sqlite_extensions and database_name != INTERNAL_DB_NAME:
+            conn.enable_load_extension(True)
+            for extension in datasette.sqlite_extensions:
+                # "extension" is either a string path to the extension
+                # or a 2-item tuple that specifies which entrypoint to load.
+                if isinstance(extension, tuple):
+                    path, entrypoint = extension
+                    conn.execute("SELECT load_extension(?, ?)", [path, entrypoint])
+                else:
+                    conn.execute("SELECT load_extension(?)", [extension])
+        if datasette.setting("cache_size_kb"):
+            conn.execute(f"PRAGMA cache_size=-{datasette.setting('cache_size_kb')}")
+        # pylint: disable=no-member
+        if database_name != INTERNAL_DB_NAME:
+            pm.hook.prepare_connection(
+                conn=conn, database=database_name, datasette=datasette
+            )
+        # If crossdb and this is _memory, connect the first
+        # SQLITE_LIMIT_ATTACHED databases
+        if datasette.crossdb and database_name == "_memory":
+            count = 0
+            for db_name, db in datasette.databases.items():
+                if count >= SQLITE_LIMIT_ATTACHED or db.is_memory:
+                    continue
+                sql = 'ATTACH DATABASE "file:{path}?{qs}" AS [{name}];'.format(
+                    path=db.path,
+                    qs="mode=ro" if db.is_mutable else "immutable=1",
+                    name=db_name,
+                )
+                conn.execute(sql)
+                count += 1
+
     def execute_query(
         self,
         conn,

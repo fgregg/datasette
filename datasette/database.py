@@ -283,7 +283,9 @@ class Database:
             # non-threaded mode
             if self._write_connection is None:
                 self._write_connection = self.connect(write=True)
-                self.ds._prepare_connection(self._write_connection, self.name)
+                self.backend.prepare_connection(
+                    self._write_connection, self.ds, self.name
+                )
             if transaction:
                 with self._write_connection:
                     result = fn(self._write_connection)
@@ -379,7 +381,7 @@ class Database:
         conn = None
         try:
             conn = self.connect(write=True)
-            self.ds._prepare_connection(conn, self.name)
+            self.backend.prepare_connection(conn, self.ds, self.name)
         except Exception as e:
             conn_exception = e
         while True:
@@ -428,7 +430,9 @@ class Database:
             # non-threaded mode
             if self._read_connection is None:
                 self._read_connection = self.connect()
-                self.ds._prepare_connection(self._read_connection, self.name)
+                self.backend.prepare_connection(
+                    self._read_connection, self.ds, self.name
+                )
             return fn(self._read_connection)
 
         # threaded mode
@@ -436,7 +440,7 @@ class Database:
             conn = getattr(connections, self._thread_local_id, None)
             if not conn:
                 conn = self.connect()
-                self.ds._prepare_connection(conn, self.name)
+                self.backend.prepare_connection(conn, self.ds, self.name)
                 setattr(connections, self._thread_local_id, conn)
             return fn(conn)
 

@@ -505,7 +505,8 @@ async def test_execute_write_many(db):
 
 @pytest.mark.asyncio
 async def test_execute_write_has_correctly_prepared_connection(db):
-    # The sleep() function is only available if ds._prepare_connection() was called
+    # The sleep() function is only available if the backend's prepare_connection()
+    # ran (it fires the prepare_connection plugin hook that registers sleep())
     await db.execute_write("select sleep(0.01)")
 
 

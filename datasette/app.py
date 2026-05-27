@@ -74,6 +74,7 @@ from .views.row import RowView, RowDeleteView, RowUpdateView
 from .renderer import json_renderer
 from .url_builder import Urls
 from .database import Database, QueryInterrupted
+from .backends.sqlite import SqliteBackend
 
 from .utils import (
     PaginatedResources,
@@ -1229,38 +1230,6 @@ class Datasette:
         if query:
             return query
 
-    def _prepare_connection(self, conn, database):
-        conn.row_factory = sqlite3.Row
-        conn.text_factory = lambda x: str(x, "utf-8", "replace")
-        if self.sqlite_extensions and database != INTERNAL_DB_NAME:
-            conn.enable_load_extension(True)
-            for extension in self.sqlite_extensions:
-                # "extension" is either a string path to the extension
-                # or a 2-item tuple that specifies which entrypoint to load.
-                if isinstance(extension, tuple):
-                    path, entrypoint = extension
-                    conn.execute("SELECT load_extension(?, ?)", [path, entrypoint])
-                else:
-                    conn.execute("SELECT load_extension(?)", [extension])
-        if self.setting("cache_size_kb"):
-            conn.execute(f"PRAGMA cache_size=-{self.setting('cache_size_kb')}")
-        # pylint: disable=no-member
-        if database != INTERNAL_DB_NAME:
-            pm.hook.prepare_connection(conn=conn, database=database, datasette=self)
-        # If self.crossdb and this is _memory, connect the first SQLITE_LIMIT_ATTACHED databases
-        if self.crossdb and database == "_memory":
-            count = 0
-            for db_name, db in self.databases.items():
-                if count >= SQLITE_LIMIT_ATTACHED or db.is_memory:
-                    continue
-                sql = 'ATTACH DATABASE "file:{path}?{qs}" AS [{name}];'.format(
-                    path=db.path,
-                    qs="mode=ro" if db.is_mutable else "immutable=1",
-                    name=db_name,
-                )
-                conn.execute(sql)
-                count += 1
-
     def add_message(self, request, message, type=INFO):
         if not hasattr(request, "_messages"):
             request._messages = []
@@ -1776,7 +1745,8 @@ class Datasette:
 
     def _versions(self):
         conn = sqlite3.connect(":memory:")
-        self._prepare_connection(conn, "_memory")
+        # Version probing is inherently SQLite-specific
+        SqliteBackend().prepare_connection(conn, self, "_memory")
         sqlite_version = conn.execute("select sqlite_version()").fetchone()[0]
         sqlite_extensions = {"json1": detect_json1(conn)}
         for extension, testsql, hasversion in (

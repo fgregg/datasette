@@ -71,6 +71,16 @@ class Backend:
         """
         raise NotImplementedError
 
+    def prepare_connection(self, conn, datasette, database_name):
+        """Configure a freshly opened connection.
+
+        Applies row/text handling, loads any configured extensions and engine
+        settings, fires the ``prepare_connection`` plugin hook, and performs any
+        cross-database attachment. Called once per connection, immediately after
+        :meth:`connect`.
+        """
+        raise NotImplementedError
+
     def execute_query(
         self,
         conn,
