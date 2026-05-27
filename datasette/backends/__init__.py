@@ -99,3 +99,59 @@ class Backend:
         mapping engine errors to ``QueryInterrupted``.
         """
         raise NotImplementedError
+
+    def introspector(self, db) -> "Introspector":
+        """Return an :class:`Introspector` bound to ``db`` for schema queries."""
+        raise NotImplementedError
+
+
+class Introspector:
+    """Schema introspection for a single database, supplied by its backend.
+
+    Bound to one :class:`datasette.database.Database`; methods run queries via
+    that database's execution methods. This is audit seam 5 from
+    ``design/backend-abstraction-audit.md`` — the ``sqlite_master`` / ``PRAGMA``
+    queries that ``Database`` used to issue inline.
+    """
+
+    def __init__(self, db):
+        self.db = db
+
+    async def table_names(self):
+        raise NotImplementedError
+
+    async def view_names(self):
+        raise NotImplementedError
+
+    async def table_exists(self, table):
+        raise NotImplementedError
+
+    async def view_exists(self, view):
+        raise NotImplementedError
+
+    async def table_columns(self, table):
+        raise NotImplementedError
+
+    async def table_column_details(self, table):
+        raise NotImplementedError
+
+    async def primary_keys(self, table):
+        raise NotImplementedError
+
+    async def fts_table(self, table):
+        raise NotImplementedError
+
+    async def foreign_keys_for_table(self, table):
+        raise NotImplementedError
+
+    async def get_all_foreign_keys(self):
+        raise NotImplementedError
+
+    async def hidden_table_names(self):
+        raise NotImplementedError
+
+    async def get_table_definition(self, table, type_="table"):
+        raise NotImplementedError
+
+    async def attached_databases(self):
+        raise NotImplementedError

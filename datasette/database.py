@@ -15,17 +15,9 @@ import uuid
 from .tracer import trace
 from .utils import (
     call_with_supported_arguments,
-    detect_fts,
-    detect_primary_keys,
-    detect_spatialite,
-    get_all_foreign_keys,
-    get_outbound_foreign_keys,
     md5_not_usedforsecurity,
     sqlite3,
-    table_columns,
-    table_column_details,
 )
-from .utils.sqlite import sqlite_version
 from .inspect import inspect_hash
 from .backends.sqlite import SqliteBackend
 
@@ -58,6 +50,7 @@ class Database:
         backend=None,
     ):
         self.backend = backend or SqliteBackend()
+        self._introspector = None
         self.name = None
         self._thread_local_id = f"x{self._thread_local_id_counter}"
         Database._thread_local_id_counter += 1
@@ -133,6 +126,13 @@ class Database:
             return self.memory_name
         else:
             return "db"
+
+    @property
+    def introspector(self):
+        # Schema introspection is delegated to the backend's Introspector.
+        if self._introspector is None:
+            self._introspector = self.backend.introspector(self)
+        return self._introspector
 
     def connect(self, write=False):
         return self.backend.connect(self, write=write)
@@ -542,47 +542,28 @@ class Database:
         return Path(self.path).stat().st_mtime_ns
 
     async def attached_databases(self):
-        # This used to be:
-        #   select seq, name, file from pragma_database_list() where seq > 0
-        # But SQLite prior to 3.16.0 doesn't support pragma functions
-        results = await self.execute("PRAGMA database_list;")
-        # {'seq': 0, 'name': 'main', 'file': ''}
-        return [
-            AttachedDatabase(*row)
-            for row in results.rows
-            # Filter out the SQLite internal "temp" database, refs #2557
-            if row["seq"] > 0 and row["name"] != "temp"
-        ]
+        return await self.introspector.attached_databases()
 
     async def table_exists(self, table):
-        results = await self.execute(
-            "select 1 from sqlite_master where type='table' and name=?", params=(table,)
-        )
-        return bool(results.rows)
+        return await self.introspector.table_exists(table)
 
     async def view_exists(self, table):
-        results = await self.execute(
-            "select 1 from sqlite_master where type='view' and name=?", params=(table,)
-        )
-        return bool(results.rows)
+        return await self.introspector.view_exists(table)
 
     async def table_names(self):
-        results = await self.execute(
-            "select name from sqlite_master where type='table' order by name"
-        )
-        return [r[0] for r in results.rows]
+        return await self.introspector.table_names()
 
     async def table_columns(self, table):
-        return await self.execute_fn(lambda conn: table_columns(conn, table))
+        return await self.introspector.table_columns(table)
 
     async def table_column_details(self, table):
-        return await self.execute_fn(lambda conn: table_column_details(conn, table))
+        return await self.introspector.table_column_details(table)
 
     async def primary_keys(self, table):
-        return await self.execute_fn(lambda conn: detect_primary_keys(conn, table))
+        return await self.introspector.primary_keys(table)
 
     async def fts_table(self, table):
-        return await self.execute_fn(lambda conn: detect_fts(conn, table))
+        return await self.introspector.fts_table(table)
 
     async def label_column_for_table(self, table):
         explicit_label_column = (await self.ds.table_config(self.name, table)).get(
@@ -633,150 +614,19 @@ class Database:
         return None
 
     async def foreign_keys_for_table(self, table):
-        return await self.execute_fn(
-            lambda conn: get_outbound_foreign_keys(conn, table)
-        )
+        return await self.introspector.foreign_keys_for_table(table)
 
     async def hidden_table_names(self):
-        hidden_tables = []
-        # Add any tables marked as hidden in config
-        db_config = self.ds.config.get("databases", {}).get(self.name, {})
-        if "tables" in db_config:
-            hidden_tables += [
-                t for t in db_config["tables"] if db_config["tables"][t].get("hidden")
-            ]
-
-        if sqlite_version()[1] >= 37:
-            hidden_tables += [x[0] for x in await self.execute("""
-                      with shadow_tables as (
-                        select name
-                        from pragma_table_list
-                        where [type] = 'shadow'
-                        order by name
-                      ),
-                      core_tables as (
-                        select name
-                        from sqlite_master
-                        WHERE  name in ('sqlite_stat1', 'sqlite_stat2', 'sqlite_stat3', 'sqlite_stat4')
-                          OR substr(name, 1, 1) == '_'
-                      ),
-                      combined as (
-                        select name from shadow_tables
-                        union all
-                        select name from core_tables
-                      )
-                      select name from combined order by 1
-                    """)]
-        else:
-            hidden_tables += [x[0] for x in await self.execute("""
-                      WITH base AS (
-                        SELECT name
-                        FROM sqlite_master
-                        WHERE  name IN ('sqlite_stat1', 'sqlite_stat2', 'sqlite_stat3', 'sqlite_stat4')
-                          OR substr(name, 1, 1) == '_'
-                      ),
-                      fts_suffixes AS (
-                        SELECT column1 AS suffix
-                        FROM (VALUES ('_data'), ('_idx'), ('_docsize'), ('_content'), ('_config'))
-                      ),
-                      fts5_names AS (
-                        SELECT name
-                        FROM sqlite_master
-                        WHERE sql LIKE '%VIRTUAL TABLE%USING FTS%'
-                      ),
-                      fts5_shadow_tables AS (
-                        SELECT
-                          printf('%s%s', fts5_names.name, fts_suffixes.suffix) AS name
-                        FROM fts5_names
-                        JOIN fts_suffixes
-                      ),
-                      fts3_suffixes AS (
-                        SELECT column1 AS suffix
-                        FROM (VALUES ('_content'), ('_segdir'), ('_segments'), ('_stat'), ('_docsize'))
-                      ),
-                      fts3_names AS (
-                        SELECT name
-                        FROM sqlite_master
-                        WHERE sql LIKE '%VIRTUAL TABLE%USING FTS3%'
-                          OR sql LIKE '%VIRTUAL TABLE%USING FTS4%'
-                      ),
-                      fts3_shadow_tables AS (
-                        SELECT
-                          printf('%s%s', fts3_names.name, fts3_suffixes.suffix) AS name
-                        FROM fts3_names
-                        JOIN fts3_suffixes
-                      ),
-                      final AS (
-                        SELECT name FROM base
-                        UNION ALL
-                        SELECT name FROM fts5_shadow_tables
-                        UNION ALL
-                        SELECT name FROM fts3_shadow_tables
-                      )
-                      SELECT name FROM final ORDER BY 1
-                    """)]
-        # Also hide any FTS tables that have a content= argument
-        hidden_tables += [x[0] for x in await self.execute("""
-                  SELECT name
-                  FROM sqlite_master
-                  WHERE sql LIKE '%VIRTUAL TABLE%'
-                    AND sql LIKE '%USING FTS%'
-                    AND sql LIKE '%content=%'
-                """)]
-
-        has_spatialite = await self.execute_fn(detect_spatialite)
-        if has_spatialite:
-            # Also hide Spatialite internal tables
-            hidden_tables += [
-                "ElementaryGeometries",
-                "SpatialIndex",
-                "geometry_columns",
-                "spatial_ref_sys",
-                "spatialite_history",
-                "sql_statements_log",
-                "sqlite_sequence",
-                "views_geometry_columns",
-                "virts_geometry_columns",
-                "data_licenses",
-                "KNN",
-                "KNN2",
-            ] + [
-                r[0] for r in (await self.execute("""
-                        select name from sqlite_master
-                        where name like "idx_%"
-                        and type = "table"
-                    """)).rows
-            ]
-
-        return hidden_tables
+        return await self.introspector.hidden_table_names()
 
     async def view_names(self):
-        results = await self.execute("select name from sqlite_master where type='view'")
-        return [r[0] for r in results.rows]
+        return await self.introspector.view_names()
 
     async def get_all_foreign_keys(self):
-        return await self.execute_fn(get_all_foreign_keys)
+        return await self.introspector.get_all_foreign_keys()
 
     async def get_table_definition(self, table, type_="table"):
-        table_definition_rows = list(
-            await self.execute(
-                "select sql from sqlite_master where name = :n and type=:t",
-                {"n": table, "t": type_},
-            )
-        )
-        if not table_definition_rows:
-            return None
-        bits = [table_definition_rows[0][0] + ";"]
-        # Add on any indexes
-        index_rows = list(
-            await self.execute(
-                "select sql from sqlite_master where tbl_name = :n and type='index' and sql is not null",
-                {"n": table},
-            )
-        )
-        for index_row in index_rows:
-            bits.append(index_row[0] + ";")
-        return "\n".join(bits)
+        return await self.introspector.get_table_definition(table, type_)
 
     async def get_view_definition(self, view):
         return await self.get_table_definition(view, "view")
