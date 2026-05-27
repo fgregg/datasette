@@ -40,6 +40,52 @@ class Features:
     supports_explain: bool = True
 
 
+class Dialect:
+    """SQL-string generation for a backend (audit seams 6/8/9).
+
+    Pure string building, no I/O. The base class implements portable SQL in
+    terms of :meth:`escape_identifier`; subclasses supply the engine-specific
+    quoting (and, in later slices, filter/facet operator fragments).
+    """
+
+    def escape_identifier(self, name: str) -> str:
+        """Quote a table/column identifier for this dialect."""
+        raise NotImplementedError
+
+    def keyset_after_sql(self, pks, start_index: int = 0) -> str:
+        """Keyset-pagination WHERE fragment for "rows ordered after this one".
+
+        For pk1/pk2/pk3 returns::
+
+            ([pk1] > :p0)
+              or
+            ([pk1] = :p0 and [pk2] > :p1)
+              or
+            ([pk1] = :p0 and [pk2] = :p1 and [pk3] > :p2)
+
+        The comparison structure is portable standard SQL; only identifier
+        quoting (via :meth:`escape_identifier`) is dialect-specific, so this
+        lives in the base class.
+        See https://github.com/simonw/datasette/issues/190
+        """
+        or_clauses = []
+        pks_left = list(pks)
+        while pks_left:
+            last = pks_left[-1]
+            rest = pks_left[:-1]
+            and_clauses = [
+                f"{self.escape_identifier(pk)} = :p{i + start_index}"
+                for i, pk in enumerate(rest)
+            ]
+            and_clauses.append(
+                f"{self.escape_identifier(last)} > :p{len(rest) + start_index}"
+            )
+            or_clauses.append(f"({' and '.join(and_clauses)})")
+            pks_left.pop()
+        or_clauses.reverse()
+        return "({})".format("\n  or\n".join(or_clauses))
+
+
 class Backend:
     """Base class for a Datasette query backend.
 
@@ -53,6 +99,9 @@ class Backend:
 
     #: Capability flags for this backend.
     features: Features = Features()
+
+    #: SQL-string generation for this backend.
+    dialect: Dialect = Dialect()
 
     @classmethod
     def handles(cls, source: str) -> bool:

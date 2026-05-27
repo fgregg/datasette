@@ -342,8 +342,13 @@ Tracks the actual extraction on branch `backend-abstraction`. Update as slices l
 - ⬜ **`validate_sql_select` + `allowed_pragmas`** (`utils`) — SQLite-tuned SQL
   allowlist still called from views; needs per-dialect rules (seam 10).
 - ⬜ Seam 3 — row representation still `sqlite3.Row` (renderer + encoder isinstance checks).
-- ⬜ Seams 6/8/9 — `Dialect`: `escape_sqlite` quoting + filter/facet operator
-  fragments. The step that finally *consumes* `Features`.
+- 🟡 Seams 6/8/9 — `Dialect` started: `escape_identifier` + `keyset_after_sql`
+  live on `Dialect`/`SqliteDialect` (`backend.dialect`, `Database.dialect`);
+  `utils.compound_keys_after_sql` is now a thin alias to the dialect, and
+  `table.py` pagination uses `db.dialect.keyset_after_sql`. **Still to convert:**
+  the ~39 remaining `escape_sqlite` call sites, and the filter/facet operator
+  fragments (`glob`, FTS `match`, `json_each`, `date()`) — the latter is where
+  `Features` (`supports_glob`/`supports_fts`/`supports_json`) finally gets read.
 - ⬜ Seam 7 — `rowid` / keyless-table pagination fallback (gated on `supports_rowid`).
 
 ## 8. Open questions

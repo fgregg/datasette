@@ -22,7 +22,6 @@ from datasette.utils import (
     call_with_supported_arguments,
     CustomRow,
     append_querystring,
-    compound_keys_after_sql,
     format_bytes,
     make_slot_function,
     tilde_encode,
@@ -1272,7 +1271,9 @@ async def table_view_data(
                 # Apply the tie-breaker based on primary keys
                 if len(components) == len(pks):
                     param_len = len(params)
-                    next_by_pk_clauses.append(compound_keys_after_sql(pks, param_len))
+                    next_by_pk_clauses.append(
+                        db.dialect.keyset_after_sql(pks, param_len)
+                    )
                     for i, pk_value in enumerate(components):
                         params[f"p{param_len + i}"] = pk_value
 

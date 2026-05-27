@@ -133,6 +133,11 @@ class Database:
             self._introspector = self.backend.introspector(self)
         return self._introspector
 
+    @property
+    def dialect(self):
+        # SQL-string generation is delegated to the backend's Dialect.
+        return self.backend.dialect
+
     def connect(self, write=False):
         return self.backend.connect(self, write=write)
 

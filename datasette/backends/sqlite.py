@@ -14,6 +14,7 @@ from ..utils import (
     detect_fts,
     detect_primary_keys,
     detect_spatialite,
+    escape_sqlite,
     get_all_foreign_keys,
     get_outbound_foreign_keys,
     sqlite_timelimit,
@@ -22,11 +23,18 @@ from ..utils import (
     table_column_details,
 )
 from ..utils.sqlite import sqlite_version
-from . import Backend, Features, Introspector
+from . import Backend, Dialect, Features, Introspector
+
+
+class SqliteDialect(Dialect):
+    def escape_identifier(self, name):
+        return escape_sqlite(name)
 
 
 class SqliteBackend(Backend):
     name = "sqlite"
+
+    dialect = SqliteDialect()
 
     features = Features(
         supports_rowid=True,
