@@ -1,11 +1,10 @@
 import json
 import urllib
 from datasette import hookimpl
-from datasette.database import QueryInterrupted
+from datasette.database import QueryInterrupted, QueryError
 from datasette.utils import (
     path_with_added_args,
     path_with_removed_args,
-    sqlite3,
 )
 
 
@@ -383,7 +382,7 @@ class ArrayFacet(Facet):
                                 ),
                             }
                         )
-            except (QueryInterrupted, sqlite3.OperationalError):
+            except (QueryInterrupted, QueryError):
                 continue
         return suggested_facets
 
@@ -518,7 +517,7 @@ class DateFacet(Facet):
                             ),
                         }
                     )
-            except (QueryInterrupted, sqlite3.OperationalError):
+            except (QueryInterrupted, QueryError):
                 continue
         return suggested_facets
 

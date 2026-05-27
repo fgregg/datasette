@@ -140,7 +140,7 @@ class SqliteBackend(Backend):
     ):
         # Imported lazily to avoid a circular import: database.py imports this
         # module at load time, and these classes live in database.py.
-        from ..database import Results, QueryInterrupted
+        from ..database import Results, QueryInterrupted, QueryError
 
         with sqlite_timelimit(conn, time_limit_ms):
             try:
@@ -165,7 +165,8 @@ class SqliteBackend(Backend):
                         )
                     )
                     sys.stderr.flush()
-                raise
+                # Don't let the sqlite3-specific exception escape the backend
+                raise QueryError(e, sql, params)
 
         if truncate:
             return Results(rows, truncated, cursor.description)

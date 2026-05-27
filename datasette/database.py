@@ -705,6 +705,24 @@ class QueryInterrupted(Exception):
         return "QueryInterrupted: {}".format(self.e)
 
 
+class QueryError(Exception):
+    """A query failed to execute (bad SQL, missing table, etc.).
+
+    Backend-agnostic: each backend's ``execute_query`` maps its native
+    operational/SQL errors to this so no engine-specific exception (e.g.
+    ``sqlite3.OperationalError``) escapes ``Database.execute``. ``str()`` yields
+    the underlying engine message.
+    """
+
+    def __init__(self, e, sql, params):
+        self.e = e
+        self.sql = sql
+        self.params = params
+
+    def __str__(self):
+        return str(self.e)
+
+
 class MultipleValues(Exception):
     pass
 
