@@ -329,17 +329,13 @@ Tracks the actual extraction on branch `backend-abstraction`. Update as slices l
 **Done (SQLite routed through the protocol, tests green):**
 - ✅ Seam 1 — `connect` + `execute_query` → `SqliteBackend`
 - ✅ Seam 2 — `prepare_connection` → `SqliteBackend` (and `Datasette._prepare_connection` removed; hook-firing is backend-owned)
-- ✅ Seam 5 — `sqlite_master`/`PRAGMA` introspection → `SqliteIntrospector`
+- ✅ Seam 5 — `sqlite_master`/`PRAGMA` introspection → `SqliteIntrospector`,
+  including `label_column_for_table`'s column+uniqueness lookup
+  (`Introspector.column_details_with_uniqueness`)
 - ✅ Seam 10 (partial) — query time-limit now lives in `SqliteBackend.execute_query`
 - ✅ Seam 11 — `Features` defined (`SqliteBackend.features`); **not yet consumed**
 
 **Residuals — still SQLite-coupled, must be extracted before a DuckDB backend works:**
-- ⬜ **`Database.label_column_for_table`** — *not yet moved.* The label-picking
-  heuristic is backend-agnostic, but its inner `column_details(conn)` uses
-  `sqlite_utils.Database(conn)` to read `columns_dict` + unique `indexes`. Needs an
-  `Introspector` method exposing per-column type + uniqueness (e.g.
-  `column_details_with_uniqueness(table) -> {name: (type, is_unique)}`); the
-  heuristic then stays on `Database` or moves wholesale. Belongs with seam 5.
 - ⬜ **`Database.table_counts`** — composed of already-abstracted `execute()` /
   `table_names()`, but still catches `sqlite3.OperationalError/DatabaseError`
   directly. Error-type mapping should come from the backend (seam 1 follow-up).

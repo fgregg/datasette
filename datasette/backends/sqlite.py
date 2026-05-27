@@ -8,6 +8,8 @@ intended to be identical; the existing test suite is the correctness oracle.
 
 import sys
 
+import sqlite_utils
+
 from ..utils import (
     detect_fts,
     detect_primary_keys,
@@ -197,6 +199,24 @@ class SqliteIntrospector(Introspector):
         return await self.db.execute_fn(
             lambda conn: table_column_details(conn, table)
         )
+
+    async def column_details_with_uniqueness(self, table):
+        # Returns {column_name: (type, is_unique)}
+        def column_details(conn):
+            db = sqlite_utils.Database(conn)
+            columns = db[table].columns_dict
+            indexes = db[table].indexes
+            details = {}
+            for name in columns:
+                is_unique = any(
+                    index
+                    for index in indexes
+                    if index.columns == [name] and index.unique
+                )
+                details[name] = (columns[name], is_unique)
+            return details
+
+        return await self.db.execute_fn(column_details)
 
     async def primary_keys(self, table):
         return await self.db.execute_fn(

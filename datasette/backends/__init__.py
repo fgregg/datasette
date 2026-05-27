@@ -135,6 +135,14 @@ class Introspector:
     async def table_column_details(self, table):
         raise NotImplementedError
 
+    async def column_details_with_uniqueness(self, table):
+        """Return ``{column_name: (type, is_unique)}`` for ``table``.
+
+        Used to pick a label column. ``type`` is the Python type; ``is_unique``
+        reflects whether a single-column unique index exists on the column.
+        """
+        raise NotImplementedError
+
     async def primary_keys(self, table):
         raise NotImplementedError
 

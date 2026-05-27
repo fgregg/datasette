@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import janus
 import queue
-import sqlite_utils
 import sys
 import tempfile
 import threading
@@ -572,22 +571,7 @@ class Database:
         if explicit_label_column:
             return explicit_label_column
 
-        def column_details(conn):
-            # Returns {column_name: (type, is_unique)}
-            db = sqlite_utils.Database(conn)
-            columns = db[table].columns_dict
-            indexes = db[table].indexes
-            details = {}
-            for name in columns:
-                is_unique = any(
-                    index
-                    for index in indexes
-                    if index.columns == [name] and index.unique
-                )
-                details[name] = (columns[name], is_unique)
-            return details
-
-        column_details = await self.execute_fn(column_details)
+        column_details = await self.introspector.column_details_with_uniqueness(table)
         # Is there just one unique column that's text?
         unique_text_columns = [
             name
