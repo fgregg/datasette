@@ -214,12 +214,46 @@ class DuckDBIntrospector(Introspector):
         }
 
     async def foreign_keys_for_table(self, table):
-        # TODO: introspect DuckDB foreign keys via duckdb_constraints()
-        return []
+        # Outbound single-column foreign keys (Datasette ignores compound FKs)
+        results = await self.db.execute(
+            "select constraint_column_names, referenced_table, "
+            "referenced_column_names from duckdb_constraints() "
+            "where table_name = :t and constraint_type = 'FOREIGN KEY'",
+            {"t": table},
+        )
+        fks = []
+        for cols, other_table, other_cols in results.rows:
+            if len(cols) == 1 and len(other_cols) == 1:
+                fks.append(
+                    {
+                        "column": cols[0],
+                        "other_table": other_table,
+                        "other_column": other_cols[0],
+                    }
+                )
+        return fks
 
     async def get_all_foreign_keys(self):
         names = await self.table_names()
-        return {name: {"incoming": [], "outgoing": []} for name in names}
+        result = {name: {"incoming": [], "outgoing": []} for name in names}
+        results = await self.db.execute(
+            "select table_name, constraint_column_names, referenced_table, "
+            "referenced_column_names from duckdb_constraints() "
+            "where constraint_type = 'FOREIGN KEY'"
+        )
+        for table_name, cols, other_table, other_cols in results.rows:
+            if len(cols) != 1 or len(other_cols) != 1:
+                continue
+            if table_name not in result or other_table not in result:
+                continue
+            from_, to_ = cols[0], other_cols[0]
+            result[table_name]["outgoing"].append(
+                {"other_table": other_table, "column": from_, "other_column": to_}
+            )
+            result[other_table]["incoming"].append(
+                {"other_table": table_name, "column": to_, "other_column": from_}
+            )
+        return result
 
     async def fts_table(self, table):
         return None
