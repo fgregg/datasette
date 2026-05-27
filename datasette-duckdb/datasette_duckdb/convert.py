@@ -49,12 +49,15 @@ def _map_type(sqlite_type):
 def _read_schema(src):
     con = sqlite3.connect(src)
     cur = con.cursor()
+    # PRAGMA table_list classifies each entry as table / view / virtual /
+    # shadow. Selecting from sqlite_master with type='table' would also pull in
+    # FTS5 virtual tables (CREATE VIRTUAL TABLE) and their shadow tables
+    # (<name>_fts_data/_idx/_docsize/_config), which aren't real data and have
+    # no DuckDB equivalent. Keep only genuine base tables in main.
     tables = [
-        r[0]
-        for r in cur.execute(
-            "select name from sqlite_master where type='table' "
-            "and name not like 'sqlite_%'"
-        )
+        r[1]
+        for r in cur.execute("PRAGMA table_list")
+        if r[0] == "main" and r[2] == "table" and not r[1].startswith("sqlite_")
     ]
     table_set = set(tables)
     meta = {}
