@@ -378,6 +378,37 @@ Tracks the actual extraction on branch `backend-abstraction`. Update as slices l
   key. (Edge case left: blob-download links on a keyless no-rowid table still
   assume a row key.)
 
+## 7b. Decision: defer SQL-text rendering; hoist SQL into backend methods
+
+The **behavioural** backend concerns (connection, execution, param style, row
+shape, timeout, error mapping, feature availability, pagination *strategy*) are
+extracted and concentrated at the backend boundary or selected via
+`Features`/strategies. That work stands and is decision-free.
+
+The **SQL-text rendering** dialect (identifier quoting, and the actual SQL for
+FTS / JSON / `date()` / glob) is **deliberately deferred** until a concrete
+second backend (DuckDB) forces its shape. Designing it now means guessing what
+actually differs. So:
+
+- **Stop the `escape_sqlite → escape_identifier` sweep.** The remaining sites
+  (`Filter` operators, `utils`/`app`/`inspect`) keep emitting SQLite SQL for now;
+  that is an un-made decision kept un-made, not debt.
+- **No dialect on the `Filter` API.** The filter slice is dropped — adding a
+  `dialect` arg to `where_clause` would spread a cross-cutting concern across
+  every operator for the benefit of two.
+
+**Guiding principle for the eventual rendering work** (Forest):
+> *Where we build SQL as strings, that's generally a sign we need to add a method
+> to the backend.*
+
+Datasette has no query IR, so the deferral mechanism is exactly that: hoist
+inline SQL-string construction into a backend / `Dialect` / `Introspector`
+**method** whose body is dialect-specific, leaving the call site neutral — as
+`Introspector` (replaced `sqlite_master`/`PRAGMA`) and
+`Paginator.keyset_after_sql` already do. Sprinkling a primitive (`escape_identifier`)
+into an inline f-string is the wrong shape; hoist the whole chunk. When DuckDB
+lands, convert the deferred sites this way rather than transpiling.
+
 ## 8. Open questions
 
 - **rowid / keyless pagination** (seam 7) — the `supports_rowid=False` fallback
