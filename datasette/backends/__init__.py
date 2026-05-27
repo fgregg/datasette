@@ -225,7 +225,12 @@ class Backend:
         """Run a read query on ``conn`` and return a ``Results``.
 
         The backend owns the time-limit strategy, row fetching/truncation, and
-        mapping engine errors to ``QueryInterrupted``.
+        mapping engine errors into Datasette's exceptions.
+
+        Contract: a backend **must** enforce ``time_limit_ms`` (when truthy) and
+        raise ``QueryInterrupted`` if it is exceeded — a query must never run
+        unbounded, since untrusted SQL reaches here. Other engine/query errors
+        must surface as ``QueryError`` (not the engine's native exception type).
         """
         raise NotImplementedError
 
