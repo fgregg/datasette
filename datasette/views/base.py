@@ -8,7 +8,7 @@ import urllib
 from markupsafe import escape
 
 
-from datasette.database import QueryInterrupted
+from datasette.database import QueryInterrupted, QueryError
 from datasette.utils.asgi import Request
 from datasette.utils import (
     add_cors_headers,
@@ -21,7 +21,6 @@ from datasette.utils import (
     path_with_added_args,
     path_with_removed_args,
     path_with_format,
-    sqlite3,
 )
 from datasette.utils.asgi import (
     AsgiStream,
@@ -255,11 +254,8 @@ class DataView(BaseView):
                 status=400,
                 message_is_html=True,
             )
-        except (sqlite3.OperationalError, InvalidSql) as e:
+        except (QueryError, InvalidSql) as e:
             raise DatasetteError(str(e), title="Invalid SQL", status=400)
-
-        except sqlite3.OperationalError as e:
-            raise DatasetteError(str(e))
 
         except DatasetteError:
             raise
@@ -437,11 +433,8 @@ async def stream_csv(datasette, fetch_data, request, database):
             data, _, _, _ = response_or_template_contexts
         else:
             data, _, _ = response_or_template_contexts
-    except (sqlite3.OperationalError, InvalidSql) as e:
+    except (QueryError, InvalidSql) as e:
         raise DatasetteError(str(e), title="Invalid SQL", status=400)
-
-    except sqlite3.OperationalError as e:
-        raise DatasetteError(str(e))
 
     except DatasetteError:
         raise

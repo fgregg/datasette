@@ -7,7 +7,7 @@ from asyncinject import Registry
 import markupsafe
 
 from datasette.plugins import pm
-from datasette.database import QueryInterrupted
+from datasette.database import QueryInterrupted, QueryError
 from datasette.events import (
     AlterTableEvent,
     DropTableEvent,
@@ -36,7 +36,6 @@ from datasette.utils import (
     truncate_url,
     value_as_boolean,
     InvalidSql,
-    sqlite3,
 )
 from datasette.utils.asgi import BadRequest, Forbidden, NotFound, Response
 from datasette.filters import Filters
@@ -1320,11 +1319,8 @@ async def table_view_data(
     # Execute the main query!
     try:
         results = await db.execute(sql, params, truncate=True, **extra_args)
-    except (sqlite3.OperationalError, InvalidSql) as e:
+    except (QueryError, InvalidSql) as e:
         raise DatasetteError(str(e), title="Invalid SQL", status=400)
-
-    except sqlite3.OperationalError as e:
-        raise DatasetteError(str(e))
 
     columns = [r[0] for r in results.description]
     rows = list(results.rows)

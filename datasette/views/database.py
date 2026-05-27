@@ -11,7 +11,7 @@ import sqlite_utils
 import textwrap
 
 from datasette.events import AlterTableEvent, CreateTableEvent, InsertRowsEvent
-from datasette.database import QueryInterrupted
+from datasette.database import QueryInterrupted, QueryError
 from datasette.resources import DatabaseResource, QueryResource
 from datasette.utils import (
     add_cors_headers,
@@ -27,7 +27,6 @@ from datasette.utils import (
     path_with_added_args,
     path_with_format,
     path_with_removed_args,
-    sqlite3,
     truncate_url,
     InvalidSql,
 )
@@ -630,15 +629,13 @@ class QueryView(View):
                     status=400,
                     message_is_html=True,
                 )
-            except sqlite3.DatabaseError as ex:
+            except QueryError as ex:
                 query_error = str(ex)
                 results = None
                 rows = []
                 columns = []
-            except (sqlite3.OperationalError, InvalidSql) as ex:
+            except InvalidSql as ex:
                 raise DatasetteError(str(ex), title="Invalid SQL", status=400)
-            except sqlite3.OperationalError as ex:
-                raise DatasetteError(str(ex))
             except DatasetteError:
                 raise
 

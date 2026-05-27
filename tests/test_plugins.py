@@ -14,6 +14,7 @@ from datasette.plugins import get_plugins, DEFAULT_PLUGINS, pm
 from datasette.permissions import PermissionSQL, Action
 from datasette.resources import DatabaseResource
 from datasette.utils.sqlite import sqlite3
+from datasette.database import QueryError
 from datasette.utils import StartupError, await_me_maybe
 from jinja2 import ChoiceLoader, FileSystemLoader
 import base64
@@ -62,7 +63,7 @@ async def test_hook_plugin_prepare_connection_arguments(ds_client):
 
     # Function should not be available on the internal database
     db = ds_client.ds.get_internal_database()
-    with pytest.raises(sqlite3.OperationalError):
+    with pytest.raises(QueryError):
         await db.execute("select prepare_connection_args()")
 
 
