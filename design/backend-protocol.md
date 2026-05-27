@@ -459,6 +459,9 @@ picked here):
 5. The **`execute_query` timeout contract** (backends must enforce it).
 6. **`CustomJSONEncoder`** handles datetime/date/Decimal (native types from
    non-SQLite backends).
+7. **`Dialect.fts_search_clause`** — full-text search SQL delegated to the
+   dialect (SQLite `MATCH` vs DuckDB `match_bm25`); `fts_pk` defaults to the
+   primary key when the backend has no rowid.
 
 This vindicates §7b: the rendering-dialect work landed as backend/dialect/
 introspector **methods** as each concrete need surfaced — never by sprinkling or
@@ -470,7 +473,12 @@ execution, the dialect (quoting, param adaptation), the introspector
 watchdog, a lightweight result row (`DuckDBRow`, ~30× cheaper than `CustomRow`
 for wide results), and the converter.
 
-**Remaining (lower-priority, plugin-side):** full-text search (in progress —
-needs an FTS-search-SQL seam, since the SQLite `MATCH` SQL is dialect-specific);
-DDL/schema display. Writes intentionally not pursued (analytic read focus).
+**Full-text search works** on DuckDB via the `fts` extension + `match_bm25`
+(full-table and per-column), once an index exists (`PRAGMA create_fts_index`).
+A latent introspection bug it exposed — column/PK/FK queries weren't scoped to
+the `main` schema, so an fts index leaked its internal tables — is fixed.
+
+**Remaining (lower-priority, plugin-side):** DDL/schema display; auto-creating
+FTS indexes during conversion. Writes intentionally not pursued (analytic read
+focus).
 
