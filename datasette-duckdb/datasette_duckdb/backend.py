@@ -81,7 +81,8 @@ class DuckDBBackend(Backend):
         truncate,
         log_sql_errors,
     ):
-        from datasette.database import Results
+        import duckdb
+        from datasette.database import Results, QueryError
 
         # TODO: enforce time_limit_ms via conn.interrupt() from a watchdog.
         duck_sql = _to_duckdb_sql(sql)
@@ -92,21 +93,25 @@ class DuckDBBackend(Backend):
             used = set(_PARAM_RE.findall(sql))
             params = {k: v for k, v in params.items() if k in used}
         cursor = conn.cursor()
-        if params:
-            cursor.execute(duck_sql, params)
-        else:
-            cursor.execute(duck_sql)
-        description = cursor.description or []
-        columns = [d[0] for d in description]
-        if max_returned_rows == page_size:
-            max_returned_rows += 1
-        if max_returned_rows and truncate:
-            raw = cursor.fetchmany(max_returned_rows + 1)
-            truncated = len(raw) > max_returned_rows
-            raw = raw[:max_returned_rows]
-        else:
-            raw = cursor.fetchall()
-            truncated = False
+        try:
+            if params:
+                cursor.execute(duck_sql, params)
+            else:
+                cursor.execute(duck_sql)
+            description = cursor.description or []
+            columns = [d[0] for d in description]
+            if max_returned_rows == page_size:
+                max_returned_rows += 1
+            if max_returned_rows and truncate:
+                raw = cursor.fetchmany(max_returned_rows + 1)
+                truncated = len(raw) > max_returned_rows
+                raw = raw[:max_returned_rows]
+            else:
+                raw = cursor.fetchall()
+                truncated = False
+        except duckdb.Error as e:
+            # Don't let the duckdb-specific exception escape the backend
+            raise QueryError(e, sql, params)
         # Wrap tuples so downstream row["col"] and row[i] both work
         rows = [CustomRow(columns, dict(zip(columns, r))) for r in raw]
         return Results(rows, truncated, description)
