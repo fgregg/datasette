@@ -1438,3 +1438,41 @@ async def test_extra_render_cell():
 
     finally:
         ds.pm.unregister(name="TestRenderCellPlugin")
+
+
+@pytest.mark.asyncio
+async def test_offset_pagination_when_backend_has_no_rowid():
+    # A keyless table on a backend that does not advertise supports_rowid falls
+    # back to offset pagination (the same strategy used for views), rather than
+    # keyset pagination over a rowid that doesn't exist.
+    import dataclasses
+    from datasette.app import Datasette
+
+    ds = Datasette(memory=True)
+    await ds.invoke_startup()
+    db = ds.add_memory_database("test_norowid_pagination")
+    await db.execute_write("create table items (name text, n integer)")
+    for i in range(8):
+        await db.execute_write(
+            "insert into items (name, n) values (?, ?)", [f"row{i}", i]
+        )
+    # Simulate a backend without a stable implicit rowid (e.g. DuckDB views)
+    db.backend.features = dataclasses.replace(
+        db.backend.features, supports_rowid=False
+    )
+
+    page1 = (
+        await ds.client.get("/test_norowid_pagination/items.json?_size=3")
+    ).json()
+    assert len(page1["rows"]) == 3
+    # The next token is an integer offset, not a keyset token
+    assert page1["next"] == "3"
+
+    page2 = (
+        await ds.client.get(
+            "/test_norowid_pagination/items.json?_size=3&_next=" + page1["next"]
+        )
+    ).json()
+    assert page2["next"] == "6"
+    # Offset advanced, so the two pages return different rows
+    assert [r["name"] for r in page1["rows"]] != [r["name"] for r in page2["rows"]]

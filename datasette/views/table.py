@@ -35,13 +35,13 @@ from datasette.utils import (
     path_with_replaced_args,
     to_css_class,
     truncate_url,
-    urlsafe_components,
     value_as_boolean,
     InvalidSql,
     sqlite3,
 )
 from datasette.utils.asgi import BadRequest, Forbidden, NotFound, Response
 from datasette.filters import Filters
+from datasette.pagination import paginator_for
 import sqlite_utils
 from .base import BaseView, DatasetteError, _error, stream_csv
 from .database import QueryView
@@ -187,7 +187,8 @@ async def display_columns_and_rows(
     pks = await db.primary_keys(table_name)
     pks_for_display = pks
     if not pks_for_display:
-        pks_for_display = ["rowid"]
+        # Only fall back to rowid as the display key if the backend has one
+        pks_for_display = ["rowid"] if db.backend.features.supports_rowid else []
 
     columns = []
     for r in description:
@@ -1165,8 +1166,12 @@ async def table_view_data(
     select_specified_columns = ", ".join(escape_sqlite(t) for t in specified_columns)
     select_all_columns = ", ".join(escape_sqlite(t) for t in table_columns)
 
-    # rowid tables (no specified primary key) need a different SELECT
-    use_rowid = not pks and not is_view
+    # rowid tables (no specified primary key) need a different SELECT - but
+    # only on a backend that provides a stable implicit rowid. A keyless table
+    # on a backend without rowid (like a view) falls back to offset pagination.
+    use_rowid = not pks and not is_view and db.backend.features.supports_rowid
+    # No stable row key -> offset pagination (views and keyless no-rowid tables)
+    use_offset = not pks and not use_rowid
     order_by = ""
     if use_rowid:
         select_specified_columns = f"rowid, {select_specified_columns}"
@@ -1177,7 +1182,7 @@ async def table_view_data(
         order_by_pks = ", ".join([escape_sqlite(pk) for pk in pks])
         order_by = order_by_pks
 
-    if is_view:
+    if use_offset:
         order_by = ""
 
     # TODO: This logic should turn into logic about which ?_extras get
@@ -1246,76 +1251,17 @@ async def table_view_data(
     # Handle pagination driven by ?_next=
     _next = _next or request.args.get("_next")
 
-    offset = ""
-    if _next:
-        sort_value = None
-        if is_view:
-            # _next is an offset
-            offset = f" offset {int(_next)}"
-        else:
-            components = urlsafe_components(_next)
-            # If a sort order is applied and there are multiple components,
-            # the first of these is the sort value
-            if (sort or sort_desc) and (len(components) > 1):
-                sort_value = components[0]
-                # Special case for if non-urlencoded first token was $null
-                if _next.split(",")[0] == "$null":
-                    sort_value = None
-                components = components[1:]
-
-            # Figure out the SQL for next-based-on-primary-key first
-            next_by_pk_clauses = []
-            if use_rowid:
-                next_by_pk_clauses.append(f"rowid > :p{len(params)}")
-                params[f"p{len(params)}"] = components[0]
-            else:
-                # Apply the tie-breaker based on primary keys
-                if len(components) == len(pks):
-                    param_len = len(params)
-                    next_by_pk_clauses.append(
-                        db.dialect.keyset_after_sql(pks, param_len)
-                    )
-                    for i, pk_value in enumerate(components):
-                        params[f"p{param_len + i}"] = pk_value
-
-            # Now add the sort SQL, which may incorporate next_by_pk_clauses
-            if sort or sort_desc:
-                if sort_value is None:
-                    if sort_desc:
-                        # Just items where column is null ordered by pk
-                        where_clauses.append(
-                            "({column} is null and {next_clauses})".format(
-                                column=escape_sqlite(sort_desc),
-                                next_clauses=" and ".join(next_by_pk_clauses),
-                            )
-                        )
-                    else:
-                        where_clauses.append(
-                            "({column} is not null or ({column} is null and {next_clauses}))".format(
-                                column=escape_sqlite(sort),
-                                next_clauses=" and ".join(next_by_pk_clauses),
-                            )
-                        )
-                else:
-                    where_clauses.append(
-                        "({column} {op} :p{p}{extra_desc_only} or ({column} = :p{p} and {next_clauses}))".format(
-                            column=escape_sqlite(sort or sort_desc),
-                            op=">" if sort else "<",
-                            p=len(params),
-                            extra_desc_only=(
-                                ""
-                                if sort
-                                else " or {column2} is null".format(
-                                    column2=escape_sqlite(sort or sort_desc)
-                                )
-                            ),
-                            next_clauses=" and ".join(next_by_pk_clauses),
-                        )
-                    )
-                    params[f"p{len(params)}"] = sort_value
-                order_by = f"{order_by}, {order_by_pks}"
-            else:
-                where_clauses.extend(next_by_pk_clauses)
+    paginator = paginator_for(
+        pks=pks,
+        use_rowid=use_rowid,
+        sort=sort,
+        sort_desc=sort_desc,
+        order_by_pks=order_by_pks,
+        dialect=db.dialect,
+    )
+    extra_where_bits, offset = paginator.where_and_offset(_next, params)
+    where_clauses.extend(extra_where_bits)
+    order_by = paginator.order_by(order_by, has_next=bool(_next))
 
     where_clause = ""
     if where_clauses:
@@ -1439,20 +1385,19 @@ async def table_view_data(
     _next = request.args.get("_next")
 
     # Pagination next link
-    next_value, next_url = await _next_value_and_url(
-        datasette,
-        db,
-        request,
-        table_name,
-        _next,
-        rows,
-        pks,
-        use_rowid,
-        sort,
-        sort_desc,
-        page_size,
-        is_view,
-    )
+    next_value = await paginator.next_value(db, table_name, rows, page_size, _next)
+    next_url = None
+    if next_value is not None:
+        added_args = {"_next": next_value}
+        # Keyset pagination over a sorted table carries the sort in the URL
+        if (sort or sort_desc) and not use_offset:
+            if sort:
+                added_args["_sort"] = sort
+            else:
+                added_args["_sort_desc"] = sort_desc
+        next_url = datasette.absolute_url(
+            request, datasette.urls.path(path_with_replaced_args(request, added_args))
+        )
     rows = rows[:page_size]
 
     # Resolve extras
@@ -1652,7 +1597,7 @@ async def table_view_data(
             table_name,
             results.description,
             rows,
-            link_column=not is_view,
+            link_column=not use_offset,
             truncate_cells=datasette.setting("truncate_cells_html"),
             sortable_columns=sortable_columns,
             request=request,
@@ -1670,7 +1615,7 @@ async def table_view_data(
 
     async def extra_render_cell():
         "Rendered HTML for each cell using the render_cell plugin hook"
-        pks_for_display = pks if pks else (["rowid"] if not is_view else [])
+        pks_for_display = pks if pks else (["rowid"] if use_rowid else [])
         col_names = [col[0] for col in results.description]
         ct_map = await datasette.get_column_types(database_name, table_name)
         rendered_rows = []
@@ -2070,67 +2015,3 @@ async def table_view_data(
         data["sort_desc"] = sort_desc
 
     return data, rows[:page_size], columns, expanded_columns, sql, next_url
-
-
-async def _next_value_and_url(
-    datasette,
-    db,
-    request,
-    table_name,
-    _next,
-    rows,
-    pks,
-    use_rowid,
-    sort,
-    sort_desc,
-    page_size,
-    is_view,
-):
-    next_value = None
-    next_url = None
-    if 0 < page_size < len(rows):
-        if is_view:
-            next_value = int(_next or 0) + page_size
-        else:
-            next_value = path_from_row_pks(rows[-2], pks, use_rowid)
-        # If there's a sort or sort_desc, add that value as a prefix
-        if (sort or sort_desc) and not is_view:
-            try:
-                prefix = rows[-2][sort or sort_desc]
-            except IndexError:
-                # sort/sort_desc column missing from SELECT - look up value by PK instead
-                prefix_where_clause = " and ".join(
-                    "[{}] = :pk{}".format(pk, i) for i, pk in enumerate(pks)
-                )
-                prefix_lookup_sql = "select [{}] from [{}] where {}".format(
-                    sort or sort_desc, table_name, prefix_where_clause
-                )
-                prefix = (
-                    await db.execute(
-                        prefix_lookup_sql,
-                        {
-                            **{
-                                "pk{}".format(i): rows[-2][pk]
-                                for i, pk in enumerate(pks)
-                            }
-                        },
-                    )
-                ).single_value()
-            if isinstance(prefix, dict) and "value" in prefix:
-                prefix = prefix["value"]
-            if prefix is None:
-                prefix = "$null"
-            else:
-                prefix = tilde_encode(str(prefix))
-            next_value = f"{prefix},{next_value}"
-            added_args = {"_next": next_value}
-            if sort:
-                added_args["_sort"] = sort
-            else:
-                added_args["_sort_desc"] = sort_desc
-        else:
-            added_args = {"_next": next_value}
-        next_url = datasette.absolute_url(
-            request, datasette.urls.path(path_with_replaced_args(request, added_args))
-        )
-    return next_value, next_url

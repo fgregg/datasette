@@ -347,8 +347,10 @@ Tracks the actual extraction on branch `backend-abstraction`. Update as slices l
 - ⬜ Seam 3 — row representation still `sqlite3.Row` (renderer + encoder isinstance checks).
 - 🟡 Seams 6/8/9 — `Dialect` started: `escape_identifier` + `keyset_after_sql`
   live on `Dialect`/`SqliteDialect` (`backend.dialect`, `Database.dialect`);
-  `utils.compound_keys_after_sql` is now a thin alias to the dialect, and
-  `table.py` pagination uses `db.dialect.keyset_after_sql`. `Filters` gates
+  `utils.compound_keys_after_sql` is now a thin alias to the dialect. Pagination
+  is delegated to a `Paginator` strategy (`datasette/pagination.py`,
+  Keyset/Offset) selected from capabilities, which uses the dialect for keyset
+  SQL and identifier quoting. `Filters` gates
   operators on `features`, and `facets.py` now gates `ArrayFacet` on
   `supports_json` (it no-ops when the backend lacks it; the global
   `detect_json1()` registration gate is gone). **Still to convert:** the ~39
@@ -357,7 +359,11 @@ Tracks the actual extraction on branch `backend-abstraction`. Update as slices l
   `sqlite3.OperationalError` catches in facet `suggest()` (backend-specific error
   types); and per-dialect SQL for operators a backend does differently (`date()`,
   FTS `match`) rather than just hiding them.
-- ⬜ Seam 7 — `rowid` / keyless-table pagination fallback (gated on `supports_rowid`).
+- ✅ Seam 7 — `rowid` / keyless-table pagination. `use_rowid` is gated on
+  `supports_rowid`; a keyless table on a no-rowid backend uses the
+  `OffsetPaginator` (like a view). Row links are suppressed when there's no row
+  key. (Edge case left: blob-download links on a keyless no-rowid table still
+  assume a row key.)
 
 ## 8. Open questions
 
