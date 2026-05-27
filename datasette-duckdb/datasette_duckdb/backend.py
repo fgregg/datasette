@@ -15,7 +15,49 @@ from datasette.backends import (
     Introspector,
     rewrite_named_parameters,
 )
-from datasette.utils import Column, CustomRow
+from datasette.utils import Column
+
+
+class DuckDBRow:
+    """Lightweight dual-access row (``row[i]`` and ``row["col"]``).
+
+    Datasette's CustomRow builds an OrderedDict per row, which dominates the
+    cost of large DuckDB result sets (~30x the fetch). This stores the value
+    tuple plus a column->index map shared across all rows of a result, so
+    wrapping is essentially free. It is not a ``dict`` subclass, so the JSON
+    renderer treats it as a positional row (correct: it iterates as values).
+    """
+
+    __slots__ = ("_columns", "_index", "_values")
+
+    def __init__(self, columns, index, values):
+        self._columns = columns
+        self._index = index
+        self._values = values
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._values[key]
+        return self._values[self._index[key]]
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self):
+        return len(self._values)
+
+    def keys(self):
+        return self._columns
+
+    def values(self):
+        return list(self._values)
+
+    def items(self):
+        return list(zip(self._columns, self._values))
+
+    def get(self, key, default=None):
+        i = self._index.get(key)
+        return self._values[i] if i is not None else default
 
 
 def _python_type(duckdb_type):
@@ -124,8 +166,10 @@ class DuckDBBackend(Backend):
         finally:
             if timer is not None:
                 timer.cancel()
-        # Wrap tuples so downstream row["col"] and row[i] both work
-        rows = [CustomRow(columns, dict(zip(columns, r))) for r in raw]
+        # Wrap tuples so downstream row["col"] and row[i] both work, sharing one
+        # column->index map across the result rather than a dict per row.
+        index = {c: i for i, c in enumerate(columns)}
+        rows = [DuckDBRow(columns, index, r) for r in raw]
         return Results(rows, truncated, description)
 
     def introspector(self, db):
