@@ -85,6 +85,12 @@ class DuckDBBackend(Backend):
 
         # TODO: enforce time_limit_ms via conn.interrupt() from a watchdog.
         duck_sql = _to_duckdb_sql(sql)
+        # DuckDB rejects params the query doesn't reference; SQLite ignores
+        # them. Datasette passes a dict of all candidate params, so filter to
+        # the ones actually used by this query.
+        if isinstance(params, dict):
+            used = set(_PARAM_RE.findall(sql))
+            params = {k: v for k, v in params.items() if k in used}
         cursor = conn.cursor()
         if params:
             cursor.execute(duck_sql, params)
