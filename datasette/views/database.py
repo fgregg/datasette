@@ -61,7 +61,10 @@ class DatabaseView(View):
             if request.url_vars.get("format"):
                 redirect_url += "." + request.url_vars.get("format")
             redirect_url += "?" + request.query_string
-            return Response.redirect(redirect_url)
+            r = Response.redirect(redirect_url, status=301)
+            if datasette.cors:
+                add_cors_headers(r.headers)
+            return r
             return await QueryView()(request, datasette)
 
         if format_ not in ("html", "json"):

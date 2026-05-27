@@ -542,15 +542,16 @@ async def test_table_html_no_primary_key(ds_client):
     assert response.status_code == 200
     table = Soup(response.text, "html.parser").find("table")
     # We have disabled sorting for this table using metadata.json
+    # No-PK tables use the injected Link column in place of rowid, so the
+    # data headers start right after Link.
     assert ["content", "a", "b", "c"] == [
-        th.string.strip() for th in table.select("thead th")[2:]
+        th.string.strip() for th in table.select("thead th")[1:]
     ]
     expected = [
         [
             '<td class="col-Link type-pk"><a href="/fixtures/no_primary_key/{}">{}</a></td>'.format(
                 i, i
             ),
-            f'<td class="col-rowid type-int">{i}</td>',
             f'<td class="col-content type-str">{i}</td>',
             f'<td class="col-a type-str">a{i}</td>',
             f'<td class="col-b type-str">b{i}</td>',
@@ -564,13 +565,17 @@ async def test_table_html_no_primary_key(ds_client):
 
 
 @pytest.mark.asyncio
-async def test_rowid_sortable_no_primary_key(ds_client):
+async def test_no_separate_rowid_column_when_no_primary_key(ds_client):
+    # No-PK tables previously rendered both a Link column (built from rowid)
+    # and a duplicate rowid column. The duplicate is now suppressed.
     response = await ds_client.get("/fixtures/no_primary_key")
     assert response.status_code == 200
     table = Soup(response.text, "html.parser").find("table")
     assert table["class"] == ["rows-and-columns"]
     ths = table.find_all("th")
-    assert "rowid\xa0▼" == ths[1].find("a").string.strip()
+    assert "Link" == ths[0].string.strip()
+    assert not table.select("th.col-rowid")
+    assert not table.select("td.col-rowid")
 
 
 @pytest.mark.asyncio
@@ -995,17 +1000,14 @@ async def test_binary_data_display_in_table(ds_client):
     expected_tds = [
         [
             '<td class="col-Link type-pk"><a href="/fixtures/binary_data/1">1</a></td>',
-            '<td class="col-rowid type-int">1</td>',
             '<td class="col-data type-bytes"><a class="blob-download" href="/fixtures/binary_data/1.blob?_blob_column=data">&lt;Binary:\xa07\xa0bytes&gt;</a></td>',
         ],
         [
             '<td class="col-Link type-pk"><a href="/fixtures/binary_data/2">2</a></td>',
-            '<td class="col-rowid type-int">2</td>',
             '<td class="col-data type-bytes"><a class="blob-download" href="/fixtures/binary_data/2.blob?_blob_column=data">&lt;Binary:\xa07\xa0bytes&gt;</a></td>',
         ],
         [
             '<td class="col-Link type-pk"><a href="/fixtures/binary_data/3">3</a></td>',
-            '<td class="col-rowid type-int">3</td>',
             '<td class="col-data type-none">\xa0</td>',
         ],
     ]
