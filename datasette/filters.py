@@ -54,7 +54,14 @@ def search_filters(request, database, table, datasette):
         fts_table = request.args.get("_fts_table")
         fts_table = fts_table or table_metadata.get("fts_table")
         fts_table = fts_table or await db.fts_table(table)
-        fts_pk = request.args.get("_fts_pk", table_metadata.get("fts_pk", "rowid"))
+        fts_pk = request.args.get("_fts_pk") or table_metadata.get("fts_pk")
+        if not fts_pk:
+            # Default to rowid where the backend has one, else the table's PK
+            if db.backend.features.supports_rowid:
+                fts_pk = "rowid"
+            else:
+                pks = await db.primary_keys(table)
+                fts_pk = pks[0] if pks else "rowid"
         search_args = {
             key: request.args[key]
             for key in request.args
@@ -76,12 +83,12 @@ def search_filters(request, database, table, datasette):
                 # Simple ?_search=xxx
                 search = search_args["_search"]
                 where_clauses.append(
-                    "{fts_pk} in (select rowid from {fts_table} where {fts_table} match {match_clause})".format(
-                        fts_table=escape_sqlite(fts_table),
-                        fts_pk=escape_sqlite(fts_pk),
-                        match_clause=(
-                            ":search" if search_mode_raw else "escape_fts(:search)"
-                        ),
+                    db.dialect.fts_search_clause(
+                        fts_table=fts_table,
+                        fts_pk=fts_pk,
+                        column=None,
+                        param="search",
+                        raw=search_mode_raw,
                     )
                 )
                 human_descriptions.append(f'search matches "{search}"')
@@ -95,14 +102,12 @@ def search_filters(request, database, table, datasette):
                         raise BadRequest("Cannot search by that column")
 
                     where_clauses.append(
-                        "rowid in (select rowid from {fts_table} where {search_col} match {match_clause})".format(
-                            fts_table=escape_sqlite(fts_table),
-                            search_col=escape_sqlite(search_col),
-                            match_clause=(
-                                ":search_{}".format(i)
-                                if search_mode_raw
-                                else "escape_fts(:search_{})".format(i)
-                            ),
+                        db.dialect.fts_search_clause(
+                            fts_table=fts_table,
+                            fts_pk=fts_pk,
+                            column=search_col,
+                            param="search_{}".format(i),
+                            raw=search_mode_raw,
                         )
                     )
                     human_descriptions.append(
