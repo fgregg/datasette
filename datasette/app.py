@@ -625,7 +625,7 @@ class Datasette:
                 [stale_db_name],
             )
         for database_name, db in self.databases.items():
-            schema_version = (await db.execute("PRAGMA schema_version")).first()[0]
+            schema_version = await db.introspector.schema_version()
             # Compare schema versions to see if we should skip it
             if schema_version == current_schema_versions.get(database_name):
                 continue

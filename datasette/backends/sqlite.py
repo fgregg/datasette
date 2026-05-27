@@ -245,6 +245,9 @@ class SqliteIntrospector(Introspector):
     async def get_all_foreign_keys(self):
         return await self.db.execute_fn(get_all_foreign_keys)
 
+    async def schema_version(self):
+        return (await self.db.execute("PRAGMA schema_version")).first()[0]
+
     async def attached_databases(self):
         # Defined in database.py; imported lazily to avoid an import cycle.
         from ..database import AttachedDatabase

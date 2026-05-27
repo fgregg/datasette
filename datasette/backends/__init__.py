@@ -212,3 +212,11 @@ class Introspector:
 
     async def attached_databases(self):
         raise NotImplementedError
+
+    async def schema_version(self):
+        """A token that changes when the database schema changes.
+
+        Used to invalidate the cached catalog. Backends without a cheap
+        equivalent may return a constant (the catalog is then populated once).
+        """
+        raise NotImplementedError
