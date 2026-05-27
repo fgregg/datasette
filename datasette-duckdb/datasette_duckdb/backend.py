@@ -3,9 +3,10 @@ A DuckDB backend for Datasette, implemented against the backend seams in
 ``datasette.backends`` (Backend / Dialect / Introspector / Features).
 
 Proof of concept: read-only analytic browsing. Known gaps (tracked as we go):
-- No query time limit yet (DuckDB has no progress handler; needs interrupt()).
 - Foreign keys / FTS / table definitions are not introspected yet.
 """
+
+import threading
 
 from datasette.backends import (
     Backend,
@@ -88,11 +89,17 @@ class DuckDBBackend(Backend):
         log_sql_errors,
     ):
         import duckdb
-        from datasette.database import Results, QueryError
+        from datasette.database import Results, QueryInterrupted, QueryError
 
-        # TODO: enforce time_limit_ms via conn.interrupt() from a watchdog.
         duck_sql, params = self.dialect.adapt_parameters(sql, params)
         cursor = conn.cursor()
+        # Enforce the time limit with a watchdog: DuckDB has no progress
+        # handler, but cursor.interrupt() from another thread cancels the
+        # running query (raising InterruptException).
+        timer = None
+        if time_limit_ms and time_limit_ms > 0:
+            timer = threading.Timer(time_limit_ms / 1000.0, cursor.interrupt)
+            timer.start()
         try:
             if params:
                 cursor.execute(duck_sql, params)
@@ -109,9 +116,14 @@ class DuckDBBackend(Backend):
             else:
                 raw = cursor.fetchall()
                 truncated = False
+        except duckdb.InterruptException as e:
+            raise QueryInterrupted(e, sql, params)
         except duckdb.Error as e:
             # Don't let the duckdb-specific exception escape the backend
             raise QueryError(e, sql, params)
+        finally:
+            if timer is not None:
+                timer.cancel()
         # Wrap tuples so downstream row["col"] and row[i] both work
         rows = [CustomRow(columns, dict(zip(columns, r))) for r in raw]
         return Results(rows, truncated, description)
