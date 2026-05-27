@@ -339,11 +339,11 @@ Tracks the actual extraction on branch `backend-abstraction`. Update as slices l
   is gated on `supports_json` too
 
 **Residuals — still SQLite-coupled, must be extracted before a DuckDB backend works:**
-- ⬜ **`Database.table_counts`** — composed of already-abstracted `execute()` /
-  `table_names()`, but still catches `sqlite3.OperationalError/DatabaseError`
-  directly. Error-type mapping should come from the backend (seam 1 follow-up).
+- ✅ **`Database.table_counts`** — now quotes via the dialect and is best-effort
+  about backend errors (the sqlite3-only catch is gone). Done.
 - ⬜ **`validate_sql_select` + `allowed_pragmas`** (`utils`) — SQLite-tuned SQL
-  allowlist still called from views; needs per-dialect rules (seam 10).
+  allowlist still called from views; works for DuckDB in practice (select/with),
+  but not yet dialect-aware (seam 10).
 - ✅ Seam 3 — row representation. The renderer no longer checks for `sqlite3.Row`;
   it distinguishes dict-like from positional rows, so `sqlite3.Row`, `CustomRow`,
   and plain tuples all render. `CustomRow` (in `utils`) is the neutral dual-access
@@ -427,4 +427,50 @@ lands, convert the deferred sites this way rather than transpiling.
 - **Granularity** — is `Dialect.operator_sql` the right shape, or should each
   `Filter` subclass own per-dialect rendering? (Leaning toward the dialect owning
   it, to keep filters declarative.)
-```
+
+## 9. Realized: the DuckDB plugin (`datasette-duckdb`)
+
+A real DuckDB backend was built on branch `duckdb-backend` (off this one) to
+validate and harden the abstraction. It implements `DuckDBBackend` /
+`DuckDBDialect` / `DuckDBIntrospector` / `DuckDBFeatures` against these seams,
+plus a `startup` hook that mounts DuckDB files from plugin config — the
+`register_backends` hook stays deferred, because a plugin that adds its own
+`Database(backend=...)` needs no core registry.
+
+**Working end-to-end on a real 501k-row dataset:** browse; offset *and* keyset
+pagination; sort; `?sql=` with named params and `::` casts; the internal
+catalog; foreign-key links + label expansion; proper column types; bounded query
+time; and a constraint-preserving SQLite→DuckDB converter.
+
+**Performance:** ~3.5× faster than SQLite at the engine on an analytic group-by,
+~2× end-to-end through Datasette; 1.0 GB SQLite → 458 MB DuckDB.
+
+**General improvements the plugin forced back into this branch** (each cherry-
+picked here):
+1. `table_counts` + `schema_version` made backend-agnostic.
+2. Internal **catalog redesigned** to populate via the introspector (was raw
+   `sqlite_master`/`PRAGMA`, SQLite-shaped: dropped `rootpage`/index table,
+   FKs in the introspector's shape).
+3. **`QueryError`** — no engine exception escapes `db.execute`; views/facets
+   catch it; `sqlite3` gone from the views.
+4. **`Dialect.adapt_parameters` + `rewrite_named_parameters`** — lexical
+   `:name` → backend style (handles strings/comments/`::`), replacing a fragile
+   regex. The deferred §7b rendering work, done as a method exactly as predicted.
+5. The **`execute_query` timeout contract** (backends must enforce it).
+6. **`CustomJSONEncoder`** handles datetime/date/Decimal (native types from
+   non-SQLite backends).
+
+This vindicates §7b: the rendering-dialect work landed as backend/dialect/
+introspector **methods** as each concrete need surfaced — never by sprinkling or
+transpiling.
+
+**Backend-specific code that correctly stayed in the plugin:** connection +
+execution, the dialect (quoting, param adaptation), the introspector
+(columns/PKs/FKs/`schema_version`), `Features`, the `interrupt()` timeout
+watchdog, a lightweight result row (`DuckDBRow`, ~30× cheaper than `CustomRow`
+for wide results), and the converter.
+
+**Remaining (lower-priority, plugin-side):** full-text search (in progress —
+needs an FTS-search-SQL seam, since the SQLite `MATCH` SQL is dialect-specific);
+DDL/schema display. Writes intentionally not pursued (analytic read focus).
+
