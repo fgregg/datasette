@@ -6,7 +6,6 @@ from datasette.utils import (
     escape_sqlite,
     path_with_added_args,
     path_with_removed_args,
-    detect_json1,
     sqlite3,
 )
 
@@ -57,10 +56,10 @@ def load_facet_configs(request, table_config):
 
 @hookimpl
 def register_facet_classes():
-    classes = [ColumnFacet, DateFacet]
-    if detect_json1():
-        classes.append(ArrayFacet)
-    return classes
+    # ArrayFacet is always registered; it no-ops for a database whose backend
+    # does not advertise supports_json (see ArrayFacet), replacing the old
+    # global detect_json1() gate.
+    return [ColumnFacet, DateFacet, ArrayFacet]
 
 
 class Facet:
@@ -90,6 +89,12 @@ class Facet:
         self.table_config = table_config
         # row_count can be None, in which case we calculate it ourselves:
         self.row_count = row_count
+
+    def _supports(self, feature):
+        # Whether this database's backend advertises a capability flag.
+        return getattr(
+            self.ds.get_database(self.database).backend.features, feature
+        )
 
     def get_configs(self):
         configs = load_facet_configs(self.request, self.table_config)
@@ -308,6 +313,8 @@ class ArrayFacet(Facet):
         return True
 
     async def suggest(self):
+        if not self._supports("supports_json"):
+            return []
         columns = await self.get_columns(self.sql, self.params)
         suggested_facets = []
         already_enabled = [c["config"]["simple"] for c in self.get_configs()]
@@ -379,6 +386,8 @@ class ArrayFacet(Facet):
 
     async def facet_results(self):
         # self.configs should be a plain list of columns
+        if not self._supports("supports_json"):
+            return [], []
         facet_results = []
         facets_timed_out = []
 

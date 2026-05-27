@@ -335,7 +335,8 @@ Tracks the actual extraction on branch `backend-abstraction`. Update as slices l
 - ✅ Seam 10 (partial) — query time-limit now lives in `SqliteBackend.execute_query`
 - ✅ Seam 11 — `Features` defined (`SqliteBackend.features`) **and now consumed**:
   `Filters` gates `glob` on `supports_glob` and the array-contains operators on
-  `supports_json` (which now mirrors `detect_json1()` for SQLite)
+  `supports_json` (which now mirrors `detect_json1()` for SQLite); `ArrayFacet`
+  is gated on `supports_json` too
 
 **Residuals — still SQLite-coupled, must be extracted before a DuckDB backend works:**
 - ⬜ **`Database.table_counts`** — composed of already-abstracted `execute()` /
@@ -347,12 +348,15 @@ Tracks the actual extraction on branch `backend-abstraction`. Update as slices l
 - 🟡 Seams 6/8/9 — `Dialect` started: `escape_identifier` + `keyset_after_sql`
   live on `Dialect`/`SqliteDialect` (`backend.dialect`, `Database.dialect`);
   `utils.compound_keys_after_sql` is now a thin alias to the dialect, and
-  `table.py` pagination uses `db.dialect.keyset_after_sql`. `Filters` now takes a
-  `features` arg and gates operators on it (see seam 11). **Still to convert:**
-  the ~39 remaining `escape_sqlite` call sites; the same `Features` gating in
-  `facets.py` (array/date facets still call `detect_json1()` directly); and
-  per-dialect SQL for operators a backend supports differently (`date()`, FTS
-  `match`) rather than just hiding them.
+  `table.py` pagination uses `db.dialect.keyset_after_sql`. `Filters` gates
+  operators on `features`, and `facets.py` now gates `ArrayFacet` on
+  `supports_json` (it no-ops when the backend lacks it; the global
+  `detect_json1()` registration gate is gone). **Still to convert:** the ~39
+  remaining `escape_sqlite` call sites; `DateFacet` (its `suggest` uses `glob`,
+  its results use `date()` — needs `supports_glob` / a date capability); the
+  `sqlite3.OperationalError` catches in facet `suggest()` (backend-specific error
+  types); and per-dialect SQL for operators a backend does differently (`date()`,
+  FTS `match`) rather than just hiding them.
 - ⬜ Seam 7 — `rowid` / keyless-table pagination fallback (gated on `supports_rowid`).
 
 ## 8. Open questions
