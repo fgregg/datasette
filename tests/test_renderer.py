@@ -39,3 +39,24 @@ def test_json_renderer_handles_plain_tuple_rows(shape, expected):
     result = _render(shape, [(1, "a"), (2, "b")], ["id", "name"])
     got = result if shape == "arrayfirst" else result["rows"]
     assert got == expected
+
+
+def test_json_renderer_serializes_temporal_and_decimal():
+    # Backends like DuckDB return native datetime/date/Decimal objects;
+    # sqlite3 returns these as strings, so SQLite never exercised this.
+    import datetime
+    import decimal
+
+    rows = [
+        (
+            datetime.datetime(2021, 5, 31, 6, 28, 33),
+            datetime.date(2009, 1, 23),
+            decimal.Decimal("12.5"),
+        )
+    ]
+    result = _render("objects", rows, ["created_at", "day", "amount"])
+    assert result["rows"][0] == {
+        "created_at": "2021-05-31T06:28:33",
+        "day": "2009-01-23",
+        "amount": 12.5,
+    }
