@@ -8,6 +8,20 @@ from datasette.utils import (
 )
 
 
+def _is_temporal_type(column_type) -> bool:
+    """True if a backend column type name denotes a date/time value.
+
+    Used by DateFacet to suggest date faceting straight from the catalog when
+    the backend already types the column (DuckDB DATE/TIMESTAMP), skipping the
+    data-sniffing probe. SQLite reports affinity-only types (usually no DATE),
+    so this simply returns False there and the probe path is used instead.
+    """
+    if not column_type:
+        return False
+    t = str(column_type).upper()
+    return any(k in t for k in ("DATE", "TIME", "TIMESTAMP"))
+
+
 def load_facet_configs(request, table_config):
     # Given a request and the configuration for a table, return
     # a dictionary of selected facets, their lists of configs and for each
@@ -482,16 +496,61 @@ class DateFacet(Facet):
     async def suggest(self):
         columns = await self.get_columns(self.sql, self.params)
         already_enabled = [c["config"]["simple"] for c in self.get_configs()]
+        db = self.ds.get_database(self.database)
+        dialect = db.dialect
+
+        # If the backend already types these columns as temporal (DATE /
+        # TIMESTAMP / etc.), the catalog is a better signal than probing the
+        # data — suggest those directly, no SQL. Only available for a real
+        # table (suggest also runs over arbitrary SQL).
+        temporal_columns = set()
+        if self.table:
+            try:
+                for col in await db.table_column_details(self.table):
+                    if _is_temporal_type(col.type):
+                        temporal_columns.add(col.name)
+            except Exception:
+                pass
+
         suggested_facets = []
         for column in columns:
             if column in already_enabled:
                 continue
-            # Does this column contain any dates in the first 100 rows?
+
+            def _add():
+                suggested_facets.append(
+                    {
+                        "name": column,
+                        "type": "date",
+                        "toggle_url": self.ds.absolute_url(
+                            self.request,
+                            self.ds.urls.path(
+                                path_with_added_args(
+                                    self.request, {"_facet_date": column}
+                                )
+                            ),
+                        ),
+                    }
+                )
+
+            if column in temporal_columns:
+                _add()
+                continue
+
+            # Otherwise probe: does this column contain any dates in the first
+            # 100 rows? The "looks like a date" predicate is dialect-specific
+            # (SQLite needs a glob guard so date() doesn't misread bare numbers
+            # as Julian days; DuckDB's try_cast is strict). date_extract_sql
+            # must return NULL — never raise — on non-date values.
             suggested_facet_sql = """
-                select date({column}) from (
+                select {extract} from (
                     select * from ({sql}) limit 100
-                ) where {column} glob "????-??-*"
-            """.format(column=self._escape(column), sql=self.sql)
+                ) where {where}
+            """.format(
+                extract=dialect.date_extract_sql(self._escape(column)),
+                sql=self.sql,
+                where=dialect.date_facet_suggest_where(self._escape(column)),
+            )
             try:
                 results = await self.ds.execute(
                     self.database,
@@ -503,20 +562,7 @@ class DateFacet(Facet):
                 )
                 values = tuple(r[0] for r in results.rows)
                 if any(values):
-                    suggested_facets.append(
-                        {
-                            "name": column,
-                            "type": "date",
-                            "toggle_url": self.ds.absolute_url(
-                                self.request,
-                                self.ds.urls.path(
-                                    path_with_added_args(
-                                        self.request, {"_facet_date": column}
-                                    )
-                                ),
-                            ),
-                        }
-                    )
+                    _add()
             except (QueryInterrupted, QueryError):
                 continue
         return suggested_facets
@@ -530,14 +576,21 @@ class DateFacet(Facet):
             config = source_and_config["config"]
             source = source_and_config["source"]
             column = config.get("column") or config["simple"]
+            # date_extract_sql must return NULL (not raise) on non-date values:
+            # DuckDB's date('') / date('garbage') hard-error, so a bare date()
+            # here would take out the whole facet on a dirty VARCHAR column.
+            # The dialect picks date() (SQLite) vs try_cast (DuckDB).
+            extract = self.ds.get_database(self.database).dialect.date_extract_sql(
+                self._escape(column)
+            )
             # TODO: does this query break if inner sql produces value or count columns?
             facet_sql = """
-                select date({col}) as value, count(*) as count from (
+                select {extract} as value, count(*) as count from (
                     {sql}
                 )
-                where date({col}) is not null
-                group by date({col}) order by count desc, value limit {limit}
-            """.format(col=self._escape(column), sql=self.sql, limit=facet_size + 1)
+                where {extract} is not null
+                group by {extract} order by count desc, value limit {limit}
+            """.format(extract=extract, sql=self.sql, limit=facet_size + 1)
             try:
                 facet_rows_results = await self.ds.execute(
                     self.database,

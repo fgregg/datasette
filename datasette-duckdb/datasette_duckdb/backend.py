@@ -97,6 +97,19 @@ class DuckDBDialect(Dialect):
         col_literal = "'" + column.replace("'", "''") + "'"
         return f"{macro}({pk}, :{param}, fields := {col_literal}) is not null"
 
+    def date_extract_sql(self, column_sql):
+        # DuckDB's date() raises on non-date input (date('') and date('garbage')
+        # both error), unlike SQLite's date() which returns NULL. try_cast gives
+        # the NULL-on-failure semantics DateFacet relies on. On a column already
+        # typed DATE/TIMESTAMP this is a cheap no-op cast.
+        return f"try_cast({column_sql} as date)"
+
+    def date_facet_suggest_where(self, column_sql):
+        # No glob guard needed: DuckDB's try_cast is strict (try_cast('12345'
+        # as date) is NULL, not a Julian-day date as SQLite's date() would
+        # give), so "extracts cleanly" is a sufficient date-likeness test.
+        return f"try_cast({column_sql} as date) is not null"
+
 
 class DuckDBBackend(Backend):
     name = "duckdb"
