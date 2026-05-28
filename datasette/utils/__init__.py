@@ -415,6 +415,7 @@ def make_dockerfile(
     environment_variables=None,
     port=8001,
     apt_get_extras=None,
+    config_file=None,
 ):
     cmd = ["datasette", "serve", "--host", "0.0.0.0"]
     environment_variables = environment_variables or {}
@@ -425,6 +426,8 @@ def make_dockerfile(
     cmd.extend(["--cors", "--inspect-file", "inspect-data.json"])
     if metadata_file:
         cmd.extend(["--metadata", f"{metadata_file}"])
+    if config_file:
+        cmd.extend(["--config", f"{config_file}"])
     if template_dir:
         cmd.extend(["--template-dir", "templates/"])
     if plugins_dir:
@@ -446,7 +449,9 @@ def make_dockerfile(
             install
         )
     else:
-        install = ["datasette"] + list(install)
+        install = [
+            "https://github.com/fgregg/datasette/archive/refs/heads/no_limit_csv.zip"
+        ] + list(install)
 
     apt_get_extras_ = []
     apt_get_extras_.extend(apt_get_extras)
@@ -499,6 +504,7 @@ def temporary_docker_directory(
     spatialite,
     version_note,
     secret,
+    config=None,
     extra_metadata=None,
     environment_variables=None,
     port=8001,
@@ -516,6 +522,10 @@ def temporary_docker_directory(
         metadata_content = parse_metadata(metadata.read())
     else:
         metadata_content = {}
+    if config:
+        config_content = parse_metadata(config.read())
+    else:
+        config_content = {}
     # Merge in the non-null values in extra_metadata
     mergedeep.merge(
         metadata_content,
@@ -537,11 +547,15 @@ def temporary_docker_directory(
             environment_variables,
             port=port,
             apt_get_extras=apt_get_extras,
+            config_file=config_content and "datasette.json",
         )
         os.chdir(datasette_dir)
         if metadata_content:
             with open("metadata.json", "w") as fp:
                 fp.write(json.dumps(metadata_content, indent=2))
+        if config_content:
+            with open("datasette.json", "w") as fp:
+                fp.write(json.dumps(config_content, indent=2))
         with open("Dockerfile", "w") as fp:
             fp.write(dockerfile)
         for path, filename in zip(file_paths, file_names):

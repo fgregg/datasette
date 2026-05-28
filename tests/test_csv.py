@@ -165,6 +165,23 @@ async def test_custom_sql_csv(ds_client):
 
 
 @pytest.mark.asyncio
+async def test_custom_sql_csv_not_truncated():
+    # Custom-SQL CSV downloads should return every row even when the row
+    # count exceeds max_returned_rows. Regression guard for the fork's
+    # truncate=False patch in QueryView's fetch_data_for_csv.
+    ds = Datasette(settings={"max_returned_rows": 3})
+    await ds.invoke_startup()
+    db = ds.add_memory_database("no_trunc")
+    await db.execute_write_script("""
+        create table t (id integer primary key);
+        insert into t (id) values (1), (2), (3), (4), (5), (6), (7);
+    """)
+    response = await ds.client.get("/no_trunc/-/query.csv?sql=select+id+from+t")
+    assert response.status_code == 200
+    assert response.text == "id\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n"
+
+
+@pytest.mark.asyncio
 async def test_table_csv_download(ds_client):
     response = await ds_client.get("/fixtures/simple_primary_key.csv?_dl=1")
     assert response.status_code == 200

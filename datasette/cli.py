@@ -168,11 +168,16 @@ def inspect(files, config, inspect_file, sqlite_extensions):
 
 
 async def inspect_(files, config, sqlite_extensions):
+    # database.execute only honors custom_time_limit when it is *shorter*
+    # than ds.sql_time_limit_ms, so we lift the global limit at construction
+    # time. Inspect is a build-step, not a request-path tool — full count(*)
+    # on a multi-million-row table can take seconds.
     app = Datasette(
         [],
         immutables=files,
         config=config,
         sqlite_extensions=sqlite_extensions,
+        settings={"sql_time_limit_ms": 3600 * 1000},
     )
     # Backend plugins (e.g. datasette-duckdb) mount their databases in
     # the startup hook off of plugin config. Without this, app.databases
@@ -182,7 +187,19 @@ async def inspect_(files, config, sqlite_extensions):
     for name, database in app.databases.items():
         if database.is_memory:
             continue
-        counts = await database.table_counts(limit=3600 * 1000)
+        # Walk tables directly (don't use database.table_counts, which caps
+        # at count_limit+1 via a LIMIT subquery — wrong shape for a build
+        # step that wants true totals). Identifier-quote via the dialect so
+        # this works across backends. Best-effort: any backend error
+        # (timeout/interrupt/etc.) records None and moves on.
+        counts = {}
+        for table in await database.table_names():
+            quoted = database.dialect.escape_identifier(table)
+            try:
+                result = await database.execute(f"select count(*) from {quoted}")
+                counts[table] = result.rows[0][0]
+            except Exception:  # build-time best-effort; includes QueryInterrupted
+                counts[table] = None
         data[name] = {
             "hash": database.hash,
             "size": database.size,
@@ -239,6 +256,12 @@ def plugins(all, requirements, plugins_dir):
     type=click.File(mode="r"),
     help="Path to JSON/YAML file containing metadata to publish",
 )
+@click.option(
+    "-c",
+    "--config",
+    type=click.File(mode="r"),
+    help="Path to JSON/YAML file containing Datasette configuration to publish",
+)
 @click.option("--extra-options", help="Extra options to pass to datasette serve")
 @click.option("--branch", help="Install datasette from a GitHub branch e.g. main")
 @click.option(
@@ -286,6 +309,7 @@ def package(
     files,
     tag,
     metadata,
+    config,
     extra_options,
     branch,
     template_dir,
@@ -312,6 +336,7 @@ def package(
         files,
         "datasette",
         metadata=metadata,
+        config=config,
         extra_options=extra_options,
         branch=branch,
         template_dir=template_dir,

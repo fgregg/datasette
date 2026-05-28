@@ -270,7 +270,7 @@ def test_publish_cloudrun_plugin_secrets(
 
     ENV DATASETTE_AUTH_GITHUB_CLIENT_ID 'x-client-id'
     ENV DATASETTE_SECRET 'x-secret'
-    RUN pip install -U datasette
+    RUN pip install -U https://github.com/fgregg/datasette/archive/refs/heads/no_limit_csv.zip
     RUN datasette inspect test.db --inspect-file inspect-data.json
     ENV PORT 8001
     EXPOSE 8001
@@ -340,7 +340,7 @@ def test_publish_cloudrun_apt_get_install(
 
     ENV DATASETTE_SECRET 'x-secret'
     ENV SQLITE_EXTENSIONS '/usr/lib/x86_64-linux-gnu/mod_spatialite.so'
-    RUN pip install -U datasette
+    RUN pip install -U https://github.com/fgregg/datasette/archive/refs/heads/no_limit_csv.zip
     RUN datasette inspect test.db --inspect-file inspect-data.json
     ENV PORT 8001
     EXPOSE 8001

@@ -60,7 +60,10 @@ class DatabaseView(View):
             if request.url_vars.get("format"):
                 redirect_url += "." + request.url_vars.get("format")
             redirect_url += "?" + request.query_string
-            return Response.redirect(redirect_url)
+            r = Response.redirect(redirect_url, status=301)
+            if datasette.cors:
+                add_cors_headers(r.headers)
+            return r
             return await QueryView()(request, datasette)
 
         if format_ not in ("html", "json"):
@@ -643,7 +646,7 @@ class QueryView(View):
         if format_ == "csv":
 
             async def fetch_data_for_csv(request, _next=None):
-                results = await db.execute(sql, params, truncate=True)
+                results = await db.execute(sql, params, truncate=False)
                 data = {"rows": results.rows, "columns": results.columns}
                 return data, None, None
 
@@ -701,7 +704,7 @@ class QueryView(View):
                 request,
                 datasette.urls.path(path_with_format(request=request, format="json")),
             )
-            data = {}
+            data = {"rows": rows, "columns": columns}
             headers.update(
                 {
                     "Link": '<{}>; rel="alternate"; type="application/json+datasette"'.format(
