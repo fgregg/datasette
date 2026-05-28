@@ -343,8 +343,36 @@ class DuckDBIntrospector(Introspector):
         return []
 
     async def get_table_definition(self, table, type_="table"):
-        # TODO: reconstruct DDL (DuckDB has no sqlite_master.sql equivalent)
-        return None
+        # DuckDB has no sqlite_master, but duckdb_tables()/duckdb_views() each
+        # expose a `sql` column with the full CREATE statement — including the
+        # inline PRIMARY KEY / FOREIGN KEY our converter emits. Scope to the
+        # main schema, matching the rest of this introspector.
+        catalog = "duckdb_views()" if type_ == "view" else "duckdb_tables()"
+        name_col = "view_name" if type_ == "view" else "table_name"
+        results = await self.db.execute(
+            f"select sql from {catalog} "
+            f"where schema_name = 'main' and {name_col} = :t",
+            {"t": table},
+        )
+        if not results.rows:
+            return None
+        ddl = results.rows[0][0]
+        if ddl is None:
+            return None
+        bits = [ddl.rstrip(";") + ";"]
+        if type_ != "view":
+            # Append any user-defined indexes. Skip is_primary (the PK is
+            # already inline in the table DDL) and rows with no reconstructable
+            # sql, mirroring the SQLite backend's "sql is not null" filter.
+            index_results = await self.db.execute(
+                "select sql from duckdb_indexes() "
+                "where schema_name = 'main' and table_name = :t "
+                "and is_primary = false and sql is not null",
+                {"t": table},
+            )
+            for row in index_results.rows:
+                bits.append(row[0].rstrip(";") + ";")
+        return "\n".join(bits)
 
     async def attached_databases(self):
         return []
