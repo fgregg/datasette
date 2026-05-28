@@ -1247,7 +1247,11 @@ async def table_view_data(
     # Copy of params so we can mutate them later:
     from_sql_params = dict(**params)
 
-    count_sql = f"select count(*) {from_sql}"
+    # Alias the count column so the "count all" JS link reads a stable name.
+    # Without an alias, different backends name the column differently (SQLite
+    # keeps the literal "count(*)", DuckDB returns "count_star()", etc.); the
+    # table.html click handler can't pick the right key generically.
+    count_sql = f"select count(*) as count {from_sql}"
 
     # Handle pagination driven by ?_next=
     _next = _next or request.args.get("_next")
@@ -1423,7 +1427,7 @@ async def table_view_data(
         if (
             not db.is_mutable
             and datasette.inspect_data
-            and count_sql == f"select count(*) from {escape(table_name)} "
+            and count_sql == f"select count(*) as count from {escape(table_name)} "
         ):
             # We can use a previously cached table row count
             try:
