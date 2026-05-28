@@ -133,16 +133,33 @@ def cli():
 
 @cli.command()
 @click.argument("files", type=click.Path(exists=True), nargs=-1)
+@click.option(
+    "-c",
+    "--config",
+    type=click.File(mode="r"),
+    help=(
+        "Path to JSON/YAML Datasette configuration file. Use to inspect "
+        "databases mounted by a backend plugin (e.g. datasette-duckdb) that "
+        "registers them via plugins.<plugin>.databases — without -c, inspect "
+        "only sees files passed as arguments, which are opened with the "
+        "default SQLite backend."
+    ),
+)
 @click.option("--inspect-file", default="-")
 @sqlite_extensions
-def inspect(files, inspect_file, sqlite_extensions):
+def inspect(files, config, inspect_file, sqlite_extensions):
     """
     Generate JSON summary of provided database files
 
     This can then be passed to "datasette --inspect-file" to speed up count
     operations against immutable database files.
     """
-    inspect_data = run_sync(lambda: inspect_(files, sqlite_extensions))
+    if not files and not config:
+        raise click.UsageError("Pass database files and/or -c config")
+    config_data = parse_metadata(config.read()) if config else None
+    inspect_data = run_sync(
+        lambda: inspect_(files, config_data, sqlite_extensions)
+    )
     if inspect_file == "-":
         sys.stdout.write(json.dumps(inspect_data, indent=2))
     else:
@@ -150,10 +167,21 @@ def inspect(files, inspect_file, sqlite_extensions):
             fp.write(json.dumps(inspect_data, indent=2))
 
 
-async def inspect_(files, sqlite_extensions):
-    app = Datasette([], immutables=files, sqlite_extensions=sqlite_extensions)
+async def inspect_(files, config, sqlite_extensions):
+    app = Datasette(
+        [],
+        immutables=files,
+        config=config,
+        sqlite_extensions=sqlite_extensions,
+    )
+    # Backend plugins (e.g. datasette-duckdb) mount their databases in
+    # the startup hook off of plugin config. Without this, app.databases
+    # only contains what was passed as immutables=.
+    await app.invoke_startup()
     data = {}
     for name, database in app.databases.items():
+        if database.is_memory:
+            continue
         counts = await database.table_counts(limit=3600 * 1000)
         data[name] = {
             "hash": database.hash,
