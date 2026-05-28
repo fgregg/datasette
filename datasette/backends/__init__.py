@@ -177,6 +177,31 @@ class Dialect:
         or_clauses.reverse()
         return "({})".format("\n  or\n".join(or_clauses))
 
+    def date_extract_sql(self, column_sql: str) -> str:
+        """SQL expression yielding the date part of ``column_sql``, or NULL for
+        values that aren't dates.
+
+        Must NOT raise on non-date input — DateFacet relies on filtering the
+        result with ``is not null``, so a hard error on one bad row would take
+        out the whole facet query. SQLite's ``date()`` returns NULL on
+        unparseable strings, so the base implementation uses it; engines whose
+        cast/extract raises on bad input (e.g. DuckDB, where ``date('')``
+        errors) override with a try-cast form.
+        """
+        return f"date({column_sql})"
+
+    def date_facet_suggest_where(self, column_sql: str) -> str:
+        """WHERE predicate used when probing whether a column looks date-like,
+        for *suggesting* a date facet.
+
+        SQLite's ``date()`` happily misreads bare numbers as Julian-day dates
+        (``date('12345')`` -> a real date), so the SQLite default pairs it with
+        a ``glob '????-??-*'`` guard to avoid suggesting numeric columns.
+        Engines with a strict cast (DuckDB's ``try_cast``) don't need the guard
+        and override this with ``<extract> is not null``.
+        """
+        return f"{column_sql} glob '????-??-*'"
+
 
 class Backend:
     """Base class for a Datasette query backend.
