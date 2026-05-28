@@ -1254,12 +1254,23 @@ def named_parameters(sql: str) -> List[str]:
 
     e.g. for ``select * from foo where id=:id`` this would return ``["id"]``
     """
-    sql = _single_line_comment_re.sub("", sql)
-    sql = _multi_line_comment_re.sub("", sql)
-    sql = _single_quote_re.sub("", sql)
-    sql = _double_quote_re.sub("", sql)
-    # Extract parameters from what is left
-    return _named_param_re.findall(sql)
+    # Delegate to the lexical scanner in datasette.backends, which correctly
+    # skips ``::`` PostgreSQL-style casts and colons inside strings/comments.
+    # The regex-based approach this replaced treated ``col::date`` as a
+    # parameter named "date", which is surprising on DuckDB (where ``::``
+    # casts are idiomatic) and incidentally wrong on SQLite too. The query
+    # view rendered an empty form input for the phantom parameter.
+    from datasette.backends import rewrite_named_parameters
+
+    _, names = rewrite_named_parameters(sql, lambda name: ":" + name)
+    # Preserve order of first appearance; dedupe.
+    seen = set()
+    out = []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
 
 
 async def derive_named_parameters(db: "Database", sql: str) -> List[str]:
