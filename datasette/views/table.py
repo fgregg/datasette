@@ -1423,10 +1423,16 @@ async def table_view_data(
         "Total count of rows matching these filters"
         # Calculate the total count for this query
         count = None
+        # count_sql is built from from_sql, which identifier-quotes the
+        # table via the dialect (`"foo"` for ANSI, `[foo]` for SQLite). The
+        # comparison must match that *escaped* form — otherwise the cache
+        # lookup never hits and every table page falls through to the
+        # bounded count query (the source of the ">10,000 rows" estimate
+        # even when inspect-data.json has the true count).
         if (
             not db.is_mutable
             and datasette.inspect_data
-            and count_sql == f"select count(*) from {table_name} "
+            and count_sql == f"select count(*) from {escape(table_name)} "
         ):
             # We can use a previously cached table row count
             try:
