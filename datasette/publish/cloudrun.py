@@ -203,8 +203,12 @@ def publish_subcommand(publish):
             spatialite,
             version_note,
             secret,
-            extra_metadata,
-            environment_variables,
+            # keyword from here: a `config=None` param was inserted before
+            # extra_metadata in the signature, so passing these positionally
+            # mis-slotted extra_metadata (a dict) into `config`, which then
+            # did config.read() -> AttributeError. Match the package caller.
+            extra_metadata=extra_metadata,
+            environment_variables=environment_variables,
             apt_get_extras=apt_get_extras,
         ):
             if show_files:
