@@ -175,12 +175,22 @@ class FilterArguments:
         self.extra_context = extra_context or {}
 
 
+def _quote_column(column, dialect):
+    # Route identifier quoting through the dialect when one is supplied, so a
+    # non-SQLite backend gets its own quoting (DuckDB rejects SQLite's [bracket]
+    # form). SqliteDialect.escape_identifier is escape_sqlite, so SQLite output
+    # is unchanged. Falls back to escape_sqlite when no dialect is passed.
+    if dialect is not None:
+        return dialect.escape_identifier(column)
+    return escape_sqlite(column)
+
+
 class Filter:
     key = None
     display = None
     no_argument = False
 
-    def where_clause(self, table, column, value, param_counter):
+    def where_clause(self, table, column, value, param_counter, dialect=None):
         raise NotImplementedError
 
     def human_clause(self, column, value):
@@ -206,7 +216,9 @@ class TemplatedFilter(Filter):
         self.numeric = numeric
         self.no_argument = no_argument
 
-    def where_clause(self, table, column, value, param_counter):
+    def where_clause(self, table, column, value, param_counter, dialect=None):
+        # Templates quote the column inline with ANSI "{c}", which is portable,
+        # so the dialect isn't needed here.
         converted = self.format.format(value)
         if self.numeric and converted.isdigit():
             converted = int(converted)
@@ -238,10 +250,10 @@ class InFilter(Filter):
         else:
             return [v.strip() for v in value.split(",")]
 
-    def where_clause(self, table, column, value, param_counter):
+    def where_clause(self, table, column, value, param_counter, dialect=None):
         values = self.split_value(value)
         params = [f":p{param_counter + i}" for i in range(len(values))]
-        sql = f"{escape_sqlite(column)} in ({', '.join(params)})"
+        sql = f"{_quote_column(column, dialect)} in ({', '.join(params)})"
         return sql, values
 
     def human_clause(self, column, value):
@@ -252,10 +264,10 @@ class NotInFilter(InFilter):
     key = "notin"
     display = "not in"
 
-    def where_clause(self, table, column, value, param_counter):
+    def where_clause(self, table, column, value, param_counter, dialect=None):
         values = self.split_value(value)
         params = [f":p{param_counter + i}" for i in range(len(values))]
-        sql = f"{escape_sqlite(column)} not in ({', '.join(params)})"
+        sql = f"{_quote_column(column, dialect)} not in ({', '.join(params)})"
         return sql, values
 
     def human_clause(self, column, value):
@@ -431,14 +443,16 @@ class Filters:
     def has_selections(self):
         return bool(self.pairs)
 
-    def build_where_clauses(self, table):
+    def build_where_clauses(self, table, dialect=None):
         sql_bits = []
         params = {}
         i = 0
         for column, lookup, value in self.selections():
             filter = self._filters_by_key.get(lookup, None)
             if filter:
-                sql_bit, param = filter.where_clause(table, column, value, i)
+                sql_bit, param = filter.where_clause(
+                    table, column, value, i, dialect=dialect
+                )
                 sql_bits.append(sql_bit)
                 if param is not None:
                     if not isinstance(param, list):
