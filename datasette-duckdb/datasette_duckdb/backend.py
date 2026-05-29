@@ -117,7 +117,7 @@ class DuckDBBackend(Backend):
     dialect = DuckDBDialect()
 
     features = Features(
-        supports_rowid=False,  # no stable implicit rowid -> offset pagination
+        supports_rowid=True,  # has a rowid pseudocolumn (orderability gated below)
         supports_fts=True,  # via the fts extension + match_bm25 (per-table index)
         supports_json=False,  # DuckDB has JSON, but not SQLite's json_each() shape
         supports_glob=False,
@@ -126,6 +126,21 @@ class DuckDBBackend(Backend):
         supports_write=False,  # read-only analytic browsing for now
         supports_explain=True,
     )
+
+    def rowid_orderable(self, db):
+        # DuckDB's rowid is a physical-storage position, documented stable only
+        # *within a transaction*. Keyset pagination spans multiple requests
+        # (multiple transactions), so it's only safe when the database is
+        # immutable (read-only, physical layout frozen) — then rowid is stable
+        # across the paging session and gives keyset pagination on keyless
+        # tables. On a mutable db, fall back to offset.
+        return not db.is_mutable
+
+    def rowid_is_identity(self, db):
+        # Never mint durable identity (row-page permalinks, displayed key) from
+        # a DuckDB rowid: it reshuffles on rebuild and is only transaction-
+        # stable, so it can't anchor a permalink. (See issue #12.)
+        return False
 
     def connect(self, db, write=False):
         import duckdb

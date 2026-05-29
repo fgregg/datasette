@@ -154,6 +154,7 @@ async def display_columns_and_rows(
     description,
     rows,
     link_column=False,
+    rowid_identity=False,
     truncate_cells=0,
     sortable_columns=None,
     request=None,
@@ -185,8 +186,9 @@ async def display_columns_and_rows(
     pks = await db.primary_keys(table_name)
     pks_for_display = pks
     if not pks_for_display:
-        # Only fall back to rowid as the display key if the backend has one
-        pks_for_display = ["rowid"] if db.backend.features.supports_rowid else []
+        # Fall back to rowid as the display key only when rowid is usable as a
+        # durable identity here (caller decides — see rowid_is_identity).
+        pks_for_display = ["rowid"] if rowid_identity else []
 
     columns = []
     for r in description:
@@ -225,7 +227,7 @@ async def display_columns_and_rows(
         # or to the simple or compound primary key
         if link_column:
             is_special_link_column = len(pks) != 1
-            pk_path = path_from_row_pks(row, pks, not pks, False)
+            pk_path = path_from_row_pks(row, pks, rowid_identity, False)
             cells.append(
                 {
                     "column": pks[0] if len(pks) == 1 else "Link",
@@ -236,7 +238,7 @@ async def display_columns_and_rows(
                         '<a href="{table_path}/{flat_pks_quoted}">{flat_pks}</a>'.format(
                             table_path=datasette.urls.table(database_name, table_name),
                             flat_pks=str(markupsafe.escape(pk_path)),
-                            flat_pks_quoted=path_from_row_pks(row, pks, not pks),
+                            flat_pks_quoted=path_from_row_pks(row, pks, rowid_identity),
                         )
                     ),
                 }
@@ -294,7 +296,7 @@ async def display_columns_and_rows(
                         datasette.urls.row_blob(
                             database_name,
                             table_name,
-                            path_from_row_pks(row, pks, not pks),
+                            path_from_row_pks(row, pks, rowid_identity),
                             column,
                         ),
                         (
@@ -1177,9 +1179,14 @@ async def table_view_data(
     select_all_columns = ", ".join(escape(t) for t in table_columns)
 
     # rowid tables (no specified primary key) need a different SELECT - but
-    # only on a backend that provides a stable implicit rowid. A keyless table
-    # on a backend without rowid (like a view) falls back to offset pagination.
-    use_rowid = not pks and not is_view and db.backend.features.supports_rowid
+    # only on a backend whose rowid is usable here. Two *separate* questions:
+    #   * use_rowid     -> can rowid order rows for keyset pagination (transient)
+    #   * rowid_identity -> may rowid mint row-page links / displayed key (durable)
+    # A backend can answer these differently (e.g. DuckDB: orderable on an
+    # immutable db, but never a durable identity). Conflating them is what made
+    # keyless tables either offset-only or rowid-permalinked; keep them split.
+    use_rowid = not pks and not is_view and db.backend.rowid_orderable(db)
+    rowid_identity = not pks and not is_view and db.backend.rowid_is_identity(db)
     # No stable row key -> offset pagination (views and keyless no-rowid tables)
     use_offset = not pks and not use_rowid
     order_by = ""
@@ -1614,7 +1621,8 @@ async def table_view_data(
             table_name,
             results.description,
             rows,
-            link_column=not use_offset,
+            link_column=bool(pks) or rowid_identity,
+            rowid_identity=rowid_identity,
             truncate_cells=datasette.setting("truncate_cells_html"),
             sortable_columns=sortable_columns,
             request=request,
@@ -1632,7 +1640,7 @@ async def table_view_data(
 
     async def extra_render_cell():
         "Rendered HTML for each cell using the render_cell plugin hook"
-        pks_for_display = pks if pks else (["rowid"] if use_rowid else [])
+        pks_for_display = pks if pks else (["rowid"] if rowid_identity else [])
         col_names = [col[0] for col in results.description]
         ct_map = await datasette.get_column_types(database_name, table_name)
         rendered_rows = []
