@@ -10,9 +10,10 @@ with SQLite's loose typing (e.g. ``''`` in an integer column -> NULL).
 SQLite's declared types are advisory, and most importers default a column to
 TEXT whenever they're unsure -- so a column of uniform ``'YYYY-MM-DD'`` strings
 arrives declared TEXT even though it's really a DATE. After mapping declared
-types, a content-inference pass (``_infer_tighter_types``) probes each VARCHAR
-column with DuckDB's own ``TRY_CAST`` and promotes it where the data is
-uniformly a tighter type. Phase 1 (#9) infers DATE only.
+types, a content-inference pass (``_infer_tighter_types``) probes each column
+with DuckDB's own ``TRY_CAST`` and promotes it where the data is uniformly a
+tighter type: VARCHAR -> UUID / DATE / TIMESTAMP / BIGINT, and DOUBLE -> REAL
+(see that function and #9 for the precedence and the profiling behind it).
 
 DuckDB enforces foreign keys at insert and has no ``ALTER ... ADD FOREIGN KEY``,
 so tables are created in dependency order with inline FKs. Foreign keys that
@@ -58,43 +59,109 @@ _MIN_SAMPLE = 100
 
 
 def _infer_tighter_types(d, table, columns):
-    """Promote VARCHAR columns whose data is uniformly a tighter type.
+    """Promote columns whose data is uniformly a tighter type than declared.
 
     Probes the *attached source* (``s."table"``, read as VARCHAR via
-    ``sqlite_all_varchar``) with DuckDB's own ``TRY_CAST`` and promotes on a
-    clean, well-sampled fit.
+    ``sqlite_all_varchar`` -- so every column reads as text here regardless of
+    its mapped target) with DuckDB's own ``TRY_CAST``. All promotions are
+    **strict** (one non-conforming value blocks) and require >= ``_MIN_SAMPLE``
+    observed values, so an all-empty snapshot column isn't promoted on no
+    evidence. See #9 (the profiling that set this scope lives on the issue).
 
-    Phase 1 (#9): DATE only. A column promotes to DATE iff every non-null,
-    non-empty value casts to DATE *and none carries a non-midnight time* -- so a
-    real datetime column isn't silently truncated to a date; it stays VARCHAR
-    until the TIMESTAMP phase. Strict: a single unparsable value blocks it.
+    Two independent promotions:
 
-    Returns ``(refined_columns, promoted_names)``.
+    * **VARCHAR -> UUID / DATE / TIMESTAMP / BIGINT**, in that most-restrictive-
+      first precedence (first full pass wins). DATE requires *no* time-of-day,
+      so real datetimes fall through to TIMESTAMP instead of being truncated.
+      BIGINT requires a lossless text round-trip (``CAST(... AS VARCHAR)``
+      equals the original), so leading-zero identifiers (zip/FIPS/account
+      numbers) are NOT silently renumbered. No VARCHAR->DOUBLE: float-shaped
+      text is rare and risky, and out of the profiled scope.
+    * **DOUBLE -> REAL** when every value fits float32 losslessly
+      (``CAST(CAST(x AS REAL) AS DOUBLE) = x``). The profiling found this is a
+      ~50% on-disk win where applicable (ALP/ALPRD can't fully bridge the 8->4
+      byte gap), but it must stay strict -- silently turning a $1234.56 penalty
+      into $1234.5599 is a real bug. We do NOT narrow existing ints
+      (BIGINT->INTEGER/SMALLINT): DuckDB's BitPacking already encodes at the
+      optimal per-row width, so it's a ~0% no-op.
+
+    Returns ``(refined_columns, [(name, target_type), ...])``.
     """
-    candidates = [n for n, ty in columns if ty == "VARCHAR"]
-    if not candidates:
+    varchar_cands = [n for n, ty in columns if ty == "VARCHAR"]
+    double_cands = [n for n, ty in columns if ty == "DOUBLE"]
+    if not varchar_cands and not double_cands:
         return columns, []
-    # One scan over the table: per candidate, count non-empty values, the ones
-    # that fail a DATE cast, and the ones that carry a real time-of-day (a
-    # TIMESTAMP that isn't its own date at midnight -> DATE would lose data).
+
+    # Build every probe for the table into one scan. `plan` records, per
+    # candidate, the (name, kind, start, width) slice of the result row.
     aggs = []
-    for n in candidates:
-        ne = f'"{n}" IS NOT NULL AND "{n}" <> \'\''
-        aggs.append(f"COUNT(*) FILTER (WHERE {ne})")
-        aggs.append(f'COUNT(*) FILTER (WHERE {ne} AND TRY_CAST("{n}" AS DATE) IS NULL)')
-        aggs.append(
-            f"COUNT(*) FILTER (WHERE {ne} "
-            f'AND TRY_CAST("{n}" AS TIMESTAMP) IS NOT NULL '
-            f'AND TRY_CAST("{n}" AS TIMESTAMP) <> CAST(TRY_CAST("{n}" AS DATE) AS TIMESTAMP))'
+    plan = []
+
+    def _add(name, kind, exprs):
+        plan.append((name, kind, len(aggs), len(exprs)))
+        aggs.extend(exprs)
+
+    for n in varchar_cands:
+        c = f'"{n}"'
+        ne = f"{c} IS NOT NULL AND {c} <> ''"
+        _add(
+            n,
+            "varchar",
+            [
+                f"COUNT(*) FILTER (WHERE {ne})",  # n_nonempty
+                f"COUNT(*) FILTER (WHERE {ne} AND TRY_CAST({c} AS UUID) IS NULL)",  # bad_uuid
+                f"COUNT(*) FILTER (WHERE {ne} AND TRY_CAST({c} AS DATE) IS NULL)",  # bad_date
+                # carries a real time-of-day (a TIMESTAMP that isn't its own date
+                # at midnight) -> DATE would lose data, so DATE must not claim it
+                f"COUNT(*) FILTER (WHERE {ne} AND TRY_CAST({c} AS TIMESTAMP) IS NOT NULL "
+                f"AND TRY_CAST({c} AS TIMESTAMP) <> CAST(TRY_CAST({c} AS DATE) AS TIMESTAMP))",  # lossy_time
+                f"COUNT(*) FILTER (WHERE {ne} AND TRY_CAST({c} AS TIMESTAMP) IS NULL)",  # bad_ts
+                # non-integer OR not a lossless round-trip (leading zeros, signs,
+                # whitespace) -> would renumber an identifier, so block it
+                f"COUNT(*) FILTER (WHERE {ne} AND (TRY_CAST({c} AS BIGINT) IS NULL "
+                f"OR CAST(TRY_CAST({c} AS BIGINT) AS VARCHAR) <> {c}))",  # bad_bigint
+            ],
         )
+
+    for n in double_cands:
+        c = f'"{n}"'
+        ne = f"{c} IS NOT NULL AND {c} <> ''"
+        vd = f"TRY_CAST({c} AS DOUBLE)"
+        _add(
+            n,
+            "double",
+            [
+                f"COUNT(*) FILTER (WHERE {ne} AND {vd} IS NOT NULL)",  # n_numeric
+                f"COUNT(*) FILTER (WHERE {ne} AND {vd} IS NOT NULL "
+                f"AND CAST(TRY_CAST({c} AS REAL) AS DOUBLE) <> {vd})",  # bad_real
+            ],
+        )
+
     row = d.execute(f'SELECT {", ".join(aggs)} FROM s."{table}"').fetchone()
-    promoted = set()
-    for i, n in enumerate(candidates):
-        n_nonempty, n_bad_date, n_lossy_time = row[3 * i : 3 * i + 3]
-        if n_nonempty >= _MIN_SAMPLE and n_bad_date == 0 and n_lossy_time == 0:
-            promoted.add(n)
-    refined = [(n, "DATE" if n in promoted else ty) for n, ty in columns]
-    return refined, [n for n, _ in columns if n in promoted]
+
+    target = {}
+    for name, kind, start, width in plan:
+        vals = row[start : start + width]
+        if kind == "varchar":
+            n_nonempty, bad_uuid, bad_date, lossy_time, bad_ts, bad_bigint = vals
+            if n_nonempty < _MIN_SAMPLE:
+                continue
+            if bad_uuid == 0:
+                target[name] = "UUID"
+            elif bad_date == 0 and lossy_time == 0:
+                target[name] = "DATE"
+            elif bad_ts == 0:
+                target[name] = "TIMESTAMP"
+            elif bad_bigint == 0:
+                target[name] = "BIGINT"
+        else:  # double -> real
+            n_numeric, bad_real = vals
+            if n_numeric >= _MIN_SAMPLE and bad_real == 0:
+                target[name] = "REAL"
+
+    refined = [(n, target.get(n, ty)) for n, ty in columns]
+    promoted = [(n, target[n]) for n, _ in columns if n in target]
+    return refined, promoted
 
 
 def _read_schema(src):
@@ -151,12 +218,14 @@ def _topo_order(tables, meta):
 def convert_sqlite_to_duckdb(src, dst, infer_types=True):
     """Convert SQLite db at ``src`` to a DuckDB file at ``dst`` (overwritten).
 
-    With ``infer_types`` (default), VARCHAR columns whose data is uniformly a
-    tighter type are promoted (phase 1: DATE) -- see ``_infer_tighter_types``.
+    With ``infer_types`` (default), columns whose data is uniformly a tighter
+    type are promoted (VARCHAR->UUID/DATE/TIMESTAMP/BIGINT, DOUBLE->REAL) -- see
+    ``_infer_tighter_types``.
 
     Returns ``(dropped, promotions)`` where ``dropped`` is a list of
     ``(table, reason)`` for foreign keys dropped as referential orphans, and
-    ``promotions`` is ``{table: [column, ...]}`` for content-promoted columns.
+    ``promotions`` is ``{table: [(column, target_type), ...]}`` for the
+    content-promoted columns.
     """
     if os.path.exists(dst):
         os.remove(dst)
@@ -222,9 +291,9 @@ def main(argv=None):
     dropped, promotions = convert_sqlite_to_duckdb(src, dst)
     print(f"Converted {src} -> {dst}")
     if promotions:
-        print("Columns promoted from VARCHAR by content inference:")
+        print("Columns promoted to tighter types by content inference:")
         for table, cols in promotions.items():
-            print(f"  {table}: " + ", ".join(f"{c} -> DATE" for c in cols))
+            print(f"  {table}: " + ", ".join(f"{c} -> {typ}" for c, typ in cols))
     if dropped:
         print("Foreign keys dropped (referential orphans / missing target):")
         for table, reason in dropped:
