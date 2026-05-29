@@ -680,6 +680,9 @@ button.core[type=button] {
     color: #666;
     padding-right: 0.25em;
 }
+.facet-count {
+    white-space: nowrap;
+}
 .facet-info li,
 .facet-info ul {
     margin: 0;
