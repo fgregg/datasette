@@ -117,7 +117,12 @@ class DuckDBBackend(Backend):
     dialect = DuckDBDialect()
 
     features = Features(
-        supports_rowid=True,  # has a rowid pseudocolumn (orderability gated below)
+        # DuckDB has a rowid pseudocolumn, so it behaves like SQLite: keyless
+        # tables get keyset pagination + rowid row pages. rowid is an unstable
+        # permalink in both engines (SQLite VACUUM / DuckDB rebuild renumber
+        # it); removing rowid-based row pages on immutable DBs is a shared fix
+        # for both backends, tracked in #12 — not special-cased here.
+        supports_rowid=True,
         supports_fts=True,  # via the fts extension + match_bm25 (per-table index)
         supports_json=False,  # DuckDB has JSON, but not SQLite's json_each() shape
         supports_glob=False,
@@ -126,18 +131,6 @@ class DuckDBBackend(Backend):
         supports_write=False,  # read-only analytic browsing for now
         supports_explain=True,
     )
-
-    # NB: no rowid_orderable / rowid_is_identity overrides — DuckDB inherits
-    # both base defaults (each = "has a rowid"), so it behaves exactly like
-    # SQLite. Neither capability is a real backend distinction:
-    #   * Identity: rowid is an unstable permalink in *both* engines (SQLite
-    #     renumbers on VACUUM/rebuild, DuckDB on rebuild).
-    #   * Orderability: keyset-on-rowid is best-effort in *both* — it assumes
-    #     rowids hold still during the paging session, which VACUUM (SQLite)
-    #     and rebuild/reclaim (DuckDB) both can break.
-    # So we don't special-case DuckDB. The genuinely-needed fix (stop minting
-    # rowid identity on immutable/rebuilt DBs) belongs in the shared base,
-    # gated on db.is_mutable, applied to both engines at once — see #12.
 
     def connect(self, db, write=False):
         import duckdb
