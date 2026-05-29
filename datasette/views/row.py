@@ -44,6 +44,13 @@ class RowView(DataView):
             raise NotFound(f"Record not found: {pk_values}")
 
         pks = resolved.pks
+        # rowid is this row's identity only on a keyless, mutable table (same
+        # rule as the table view). On an immutable keyless table rowid is just
+        # an internal locator and must not be surfaced as a column (#12).
+        # resolved.pks is ["rowid"] for a keyless table (the resolver's synthetic
+        # key), so test the *real* primary keys, matching display_columns_and_rows.
+        real_pks = await db.primary_keys(table)
+        rowid_identity = not real_pks and db.is_mutable
 
         async def template_data():
             # Reorder columns so primary keys come first
@@ -100,6 +107,7 @@ class RowView(DataView):
                 reordered_description,
                 expanded_rows,
                 link_column=False,
+                rowid_identity=rowid_identity,
                 truncate_cells=0,
                 request=request,
             )
