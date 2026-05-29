@@ -91,7 +91,16 @@ class DuckDBDialect(Dialect):
         # The DuckDB fts extension indexes a base table into schema
         # fts_main_<table>, queried via match_bm25(doc_id, query[, fields]).
         macro = self.escape_identifier("fts_main_" + fts_table) + ".match_bm25"
-        pk = self.escape_identifier(fts_pk)
+        if fts_pk == "rowid":
+            # match_bm25 expands to a correlated subquery that joins
+            # fts_main_<table>.docs, which has its *own* rowid pseudocolumn -- a
+            # bare `rowid` doc-id gets shadow-captured there and the subquery
+            # returns multiple rows (hard error). Qualify it to the base table's
+            # rowid. (rowid is a fine doc-id within an immutable converted file;
+            # see #4.)
+            pk = self.escape_identifier(fts_table) + ".rowid"
+        else:
+            pk = self.escape_identifier(fts_pk)
         if column is None:
             return f"{macro}({pk}, :{param}) is not null"
         col_literal = "'" + column.replace("'", "''") + "'"
