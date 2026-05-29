@@ -578,6 +578,8 @@ Package SQLite files into a Datasette Docker container, see :ref:`cli_package`.
                                 optionally use name:tag format
       -m, --metadata FILENAME   Path to JSON/YAML file containing metadata to
                                 publish
+      -c, --config FILENAME     Path to JSON/YAML file containing Datasette
+                                configuration to publish
       --extra-options TEXT      Extra options to pass to datasette serve
       --branch TEXT             Install datasette from a GitHub branch e.g. main
       --template-dir DIRECTORY  Path to directory containing custom templates
