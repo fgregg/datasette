@@ -136,11 +136,14 @@ class DuckDBBackend(Backend):
         # tables. On a mutable db, fall back to offset.
         return not db.is_mutable
 
-    def rowid_is_identity(self, db):
-        # Never mint durable identity (row-page permalinks, displayed key) from
-        # a DuckDB rowid: it reshuffles on rebuild and is only transaction-
-        # stable, so it can't anchor a permalink. (See issue #12.)
-        return False
+    # NB: no rowid_is_identity override — DuckDB inherits the base default
+    # (identity iff the backend has a rowid). rowid is not a stable permalink
+    # in *either* engine (SQLite renumbers on VACUUM/rebuild, DuckDB on
+    # rebuild), so singling DuckDB out here would just make the two backends
+    # diverge for a problem they share. Keep parity with SQLite's current
+    # behavior — keyless tables get rowid row-page links — and remove rowid
+    # identity for both at once via #12 (gate the base on db.is_mutable), so
+    # the fix lands upstream uniformly rather than per-backend.
 
     def connect(self, db, write=False):
         import duckdb
