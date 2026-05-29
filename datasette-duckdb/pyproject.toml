@@ -5,6 +5,9 @@ description = "DuckDB backend for Datasette (proof of concept)"
 requires-python = ">=3.9"
 dependencies = ["datasette", "duckdb>=1.0"]
 
+[project.optional-dependencies]
+test = ["pytest"]
+
 [project.entry-points.datasette]
 duckdb = "datasette_duckdb"
 
