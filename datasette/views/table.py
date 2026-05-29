@@ -253,12 +253,13 @@ async def display_columns_and_rows(
                 # If there's a simple primary key, don't repeat the value as it's
                 # already shown in the link column.
                 continue
-            if not pks and column == "rowid":
-                # No explicit primary key: rowid is selected only as an
-                # internal key (keyset pagination / the optional Link column).
-                # Never render it as a data cell — when link_column is set it'd
-                # duplicate the Link column; when it isn't (immutable db, #12)
-                # the rowid shouldn't be shown at all.
+            if not pks and column == "rowid" and (link_column or not rowid_identity):
+                # No explicit primary key: rowid is selected only as an internal
+                # key (keyset pagination / the optional Link column). Skip it as
+                # a data cell when it would duplicate the Link column
+                # (link_column) or when it isn't the row's identity at all
+                # (immutable keyless, #12). On a mutable keyless row page
+                # (rowid_identity, no Link column) it stays, as the durable key.
                 continue
 
             # First try column type render_cell, then plugins
@@ -358,11 +359,11 @@ async def display_columns_and_rows(
             )
         cell_rows.append(Row(cells))
 
-    # rowid is selected only as an internal key; never show it as a data
-    # column header. Drop it whenever it was injected (keyless table),
-    # independent of whether a Link column is rendered (#12: immutable keyless
-    # tables have neither a rowid column nor a Link column).
-    if not pks:
+    # rowid is selected only as an internal key. Drop its column header when it
+    # would duplicate the Link column (link_column) or when it isn't the row's
+    # identity (immutable keyless, #12). On a mutable keyless row page
+    # (rowid_identity, no Link column) keep it — it's the durable row key.
+    if not pks and (link_column or not rowid_identity):
         columns = [col for col in columns if col["name"] != "rowid"]
 
     if link_column:
