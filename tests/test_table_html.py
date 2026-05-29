@@ -485,7 +485,7 @@ async def test_table_csv_json_export_interface(ds_client):
         "/fixtures/simple_primary_key.testall?id__gt=2",
         "/fixtures/simple_primary_key.testnone?id__gt=2",
         "/fixtures/simple_primary_key.testresponse?id__gt=2",
-        "/fixtures/simple_primary_key.csv?id__gt=2&_size=max",
+        "/fixtures/simple_primary_key.csv?id__gt=2&_size=max&_stream=on",
         "#export",
     ]
     assert expected == actual
@@ -525,7 +525,7 @@ async def test_csv_json_export_links_include_labels_if_foreign_keys(ds_client):
         "/fixtures/facetable.testall?_labels=on",
         "/fixtures/facetable.testnone?_labels=on",
         "/fixtures/facetable.testresponse?_labels=on",
-        "/fixtures/facetable.csv?_labels=on&_size=max",
+        "/fixtures/facetable.csv?_labels=on&_size=max&_stream=on",
         "#export",
     ]
     assert expected == actual
