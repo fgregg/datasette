@@ -17,6 +17,7 @@ remain in their original locations and are the next extraction steps.
 
 import re
 from dataclasses import dataclass
+from typing import Optional
 
 _NAME_RE = re.compile(r"\w+")
 
@@ -219,6 +220,11 @@ class Backend:
     #: SQL-string generation for this backend.
     dialect: Dialect = Dialect()
 
+    #: Maximum number of databases this backend can ATTACH into one
+    #: cross-database (``--crossdb``) host connection, or ``None`` for no limit.
+    #: SQLite caps this (``SQLITE_LIMIT_ATTACHED``); DuckDB has no such ceiling.
+    crossdb_attach_limit: Optional[int] = None
+
     @classmethod
     def handles(cls, source: str) -> bool:
         """Whether this backend recognises a given path / URL source.
@@ -236,13 +242,25 @@ class Backend:
         """
         raise NotImplementedError
 
+    def attach_others_for_crossdb(self, conn, datasette, current_db_name):
+        """ATTACH the other databases this backend serves into ``conn``.
+
+        Called against the cross-database host connection (today: ``_memory``
+        when ``--crossdb`` is on) so a query there can join across databases.
+        The default is a no-op; backends that advertise ``supports_attach``
+        override this to emit their engine's ATTACH syntax. An override should
+        attach **only** databases this backend can open (matching
+        ``backend.name``) and respect :attr:`crossdb_attach_limit`.
+        """
+        return
+
     def prepare_connection(self, conn, datasette, database_name):
         """Configure a freshly opened connection.
 
         Applies row/text handling, loads any configured extensions and engine
-        settings, fires the ``prepare_connection`` plugin hook, and performs any
-        cross-database attachment. Called once per connection, immediately after
-        :meth:`connect`.
+        settings, fires the ``prepare_connection`` plugin hook, and (on the
+        cross-database host connection) calls :meth:`attach_others_for_crossdb`.
+        Called once per connection, immediately after :meth:`connect`.
         """
         raise NotImplementedError
 

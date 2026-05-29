@@ -100,10 +100,17 @@ class SqliteBackend(Backend):
             db._wal_enabled = True
         return conn
 
+    @property
+    def crossdb_attach_limit(self):
+        # SQLite caps the number of ATTACHed databases per connection.
+        from ..app import SQLITE_LIMIT_ATTACHED
+
+        return SQLITE_LIMIT_ATTACHED
+
     def prepare_connection(self, conn, datasette, database_name):
         # Imported lazily to avoid a circular import at module load time:
         # app imports database imports this module.
-        from ..app import INTERNAL_DB_NAME, SQLITE_LIMIT_ATTACHED
+        from ..app import INTERNAL_DB_NAME
         from ..plugins import pm
 
         conn.row_factory = sqlite3.Row
@@ -125,20 +132,30 @@ class SqliteBackend(Backend):
             pm.hook.prepare_connection(
                 conn=conn, database=database_name, datasette=datasette
             )
-        # If crossdb and this is _memory, connect the first
-        # SQLITE_LIMIT_ATTACHED databases
         if datasette.crossdb and database_name == "_memory":
-            count = 0
-            for db_name, db in datasette.databases.items():
-                if count >= SQLITE_LIMIT_ATTACHED or db.is_memory:
-                    continue
-                sql = 'ATTACH DATABASE "file:{path}?{qs}" AS [{name}];'.format(
+            self.attach_others_for_crossdb(conn, datasette, database_name)
+
+    def attach_others_for_crossdb(self, conn, datasette, current_db_name):
+        # Attach the first SQLITE_LIMIT_ATTACHED other SQLite databases into the
+        # _memory host connection so a query there can join across them. Only
+        # SQLite-backed databases are attachable here (a different backend's
+        # files aren't SQLite), so skip anything this backend can't open.
+        count = 0
+        for db_name, db in datasette.databases.items():
+            if (
+                count >= self.crossdb_attach_limit
+                or db.is_memory
+                or db.backend.name != self.name
+            ):
+                continue
+            conn.execute(
+                'ATTACH DATABASE "file:{path}?{qs}" AS [{name}];'.format(
                     path=db.path,
                     qs="mode=ro" if db.is_mutable else "immutable=1",
                     name=db_name,
                 )
-                conn.execute(sql)
-                count += 1
+            )
+            count += 1
 
     def execute_query(
         self,
