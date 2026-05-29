@@ -141,10 +141,25 @@ class DuckDBBackend(Backend):
         # opens one per thread)
         return duckdb.connect(db.path, read_only=not write)
 
+    # crossdb_attach_limit inherits the base default (None): DuckDB has no
+    # SQLITE_LIMIT_ATTACHED-style ceiling on the number of attached databases.
+
     def prepare_connection(self, conn, datasette, database_name):
-        # Nothing to do yet. We deliberately do NOT fire the prepare_connection
-        # plugin hook here: those plugins assume a sqlite3 connection.
-        pass
+        # We deliberately do NOT fire the prepare_connection plugin hook here:
+        # those plugins assume a sqlite3 connection.
+        if datasette.crossdb and database_name == "_memory":
+            self.attach_others_for_crossdb(conn, datasette, database_name)
+
+    def attach_others_for_crossdb(self, conn, datasette, current_db_name):
+        # Attach every DuckDB-backed database read-only into the _memory host
+        # connection so a query there can join across them (e.g. the union_names
+        # canned query). DuckDB has no attach-count ceiling. Only this backend's
+        # own databases are attachable; a different backend's files aren't
+        # DuckDB, so skip them (we don't support mixed-backend crossdb).
+        for db_name, db in datasette.databases.items():
+            if db.is_memory or db.backend.name != self.name:
+                continue
+            conn.execute(f"ATTACH '{db.path}' AS \"{db_name}\" (READ_ONLY)")
 
     def execute_query(
         self,

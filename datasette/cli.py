@@ -18,7 +18,6 @@ from .app import (
     Datasette,
     DEFAULT_SETTINGS,
     SETTINGS,
-    SQLITE_LIMIT_ATTACHED,
     pm,
 )
 from .utils import (
@@ -724,6 +723,10 @@ def serve(
     except StartupError as e:
         raise click.ClickException(e.args[0])
 
+    # After startup: the crossdb host's real backend and any plugin-mounted
+    # databases are now in place, so the attach-limit warning can be accurate.
+    warn_if_crossdb_over_limit(ds)
+
     if headers and not get:
         raise click.ClickException("--headers can only be used with --get")
 
@@ -937,15 +940,31 @@ async def check_databases(ds):
             raise click.UsageError(
                 f"Connection to {database.path} failed check: {str(e.args[0])}"
             )
-    # If --crossdb and more than SQLITE_LIMIT_ATTACHED show warning
-    if (
-        ds.crossdb
-        and len([db for db in ds.databases.values() if not db.is_memory])
-        > SQLITE_LIMIT_ATTACHED
-    ):
+
+
+def warn_if_crossdb_over_limit(ds):
+    # The crossdb host (_memory) can only ATTACH so many databases, and the
+    # ceiling is the host backend's: SQLite caps it, DuckDB does not. Count only
+    # the databases that host will actually attach (same backend, non-memory).
+    # Runs after invoke_startup so the host's real backend and any
+    # plugin-mounted databases are in place.
+    if not ds.crossdb:
+        return
+    host = ds.databases.get("_memory")
+    if host is None:
+        return
+    limit = host.backend.crossdb_attach_limit
+    if limit is None:
+        return
+    attachable = [
+        db
+        for db in ds.databases.values()
+        if not db.is_memory and db.backend.name == host.backend.name
+    ]
+    if len(attachable) > limit:
         msg = (
             "Warning: --crossdb only works with the first {} attached databases".format(
-                SQLITE_LIMIT_ATTACHED
+                limit
             )
         )
         click.echo(click.style(msg, bold=True, fg="yellow"), err=True)
