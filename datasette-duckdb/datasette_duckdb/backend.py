@@ -286,9 +286,7 @@ class DuckDBIntrospector(Introspector):
 
     async def column_details_with_uniqueness(self, table):
         details = await self.table_column_details(table)
-        return {
-            col.name: (_python_type(col.type), bool(col.is_pk)) for col in details
-        }
+        return {col.name: (_python_type(col.type), bool(col.is_pk)) for col in details}
 
     async def foreign_keys_for_table(self, table):
         # Outbound single-column foreign keys (Datasette ignores compound FKs)
