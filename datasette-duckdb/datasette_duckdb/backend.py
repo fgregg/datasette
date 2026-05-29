@@ -409,7 +409,23 @@ class DuckDBIntrospector(Introspector):
         return "\n".join(bits)
 
     async def attached_databases(self):
-        return []
+        from datasette.database import AttachedDatabase
+
+        # On the crossdb host (_memory) the other databases are ATTACHed; list
+        # them so the database page can show what's joinable. Exclude system/temp
+        # (internal) and the host's own catalog (current_database() -- 'memory'
+        # for the in-memory host). For a regular database this is empty.
+        results = await self.db.execute(
+            "select database_name, path from duckdb_databases() "
+            "where not internal and database_name != current_database() "
+            "order by database_name"
+        )
+        return [
+            AttachedDatabase(
+                seq=i + 1, name=row["database_name"], file=row["path"] or ""
+            )
+            for i, row in enumerate(results.rows)
+        ]
 
     async def schema_version(self):
         # DuckDB has no cheap schema-version token; treat as static so the

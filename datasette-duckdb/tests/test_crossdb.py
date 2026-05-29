@@ -54,6 +54,20 @@ def test_cross_database_join_through_memory(crossdb_datasette):
     assert [dict(r) for r in rows] == [{"s": 42}]
 
 
+def test_memory_lists_attached_databases(crossdb_datasette):
+    # The _memory database page shows what's joinable -> introspector must
+    # report the attached databases (the warehouse template gates on this).
+    ds = crossdb_datasette
+    attached = asyncio.run(ds.databases["_memory"].attached_databases())
+    assert sorted(d.name for d in attached) == ["a", "b"]
+
+
+def test_regular_database_reports_no_attachments(crossdb_datasette):
+    # A normal file database isn't a crossdb host -> no attachments listed.
+    ds = crossdb_datasette
+    assert asyncio.run(ds.databases["a"].attached_databases()) == []
+
+
 def test_each_attached_database_queryable(crossdb_datasette):
     ds = crossdb_datasette
     a_rows = asyncio.run(ds.databases["_memory"].execute("SELECT val FROM a.t"))
