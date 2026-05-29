@@ -1457,13 +1457,9 @@ async def test_offset_pagination_when_backend_has_no_rowid():
             "insert into items (name, n) values (?, ?)", [f"row{i}", i]
         )
     # Simulate a backend without a stable implicit rowid (e.g. DuckDB views)
-    db.backend.features = dataclasses.replace(
-        db.backend.features, supports_rowid=False
-    )
+    db.backend.features = dataclasses.replace(db.backend.features, supports_rowid=False)
 
-    page1 = (
-        await ds.client.get("/test_norowid_pagination/items.json?_size=3")
-    ).json()
+    page1 = (await ds.client.get("/test_norowid_pagination/items.json?_size=3")).json()
     assert len(page1["rows"]) == 3
     # The next token is an integer offset, not a keyset token
     assert page1["next"] == "3"

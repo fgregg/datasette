@@ -15,7 +15,6 @@ from .tracer import trace
 from .utils import (
     call_with_supported_arguments,
     md5_not_usedforsecurity,
-    sqlite3,
 )
 from .inspect import inspect_hash
 from .backends.sqlite import SqliteBackend

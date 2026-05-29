@@ -25,7 +25,11 @@ def _to_dollar(sql):
         # Colon inside a double-quoted identifier is not a placeholder
         ('select "a:b", :foo', 'select "a:b", $foo', ["foo"]),
         # Colon inside a line comment is not a placeholder
-        ("select 1 -- :nope\nwhere a = :real", "select 1 -- :nope\nwhere a = $real", ["real"]),
+        (
+            "select 1 -- :nope\nwhere a = :real",
+            "select 1 -- :nope\nwhere a = $real",
+            ["real"],
+        ),
         # Colon inside a block comment is not a placeholder
         ("select /* :nope */ :real", "select /* :nope */ $real", ["real"]),
         # Repeated placeholder appears once per use, in order

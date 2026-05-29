@@ -157,9 +157,7 @@ def inspect(files, config, inspect_file, sqlite_extensions):
     if not files and not config:
         raise click.UsageError("Pass database files and/or -c config")
     config_data = parse_metadata(config.read()) if config else None
-    inspect_data = run_sync(
-        lambda: inspect_(files, config_data, sqlite_extensions)
-    )
+    inspect_data = run_sync(lambda: inspect_(files, config_data, sqlite_extensions))
     if inspect_file == "-":
         sys.stdout.write(json.dumps(inspect_data, indent=2))
     else:

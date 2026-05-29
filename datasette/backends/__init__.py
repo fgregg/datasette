@@ -18,7 +18,6 @@ remain in their original locations and are the next extraction steps.
 import re
 from dataclasses import dataclass
 
-
 _NAME_RE = re.compile(r"\w+")
 
 
@@ -184,7 +183,7 @@ class Dialect:
         Must NOT raise on non-date input — DateFacet relies on filtering the
         result with ``is not null``, so a hard error on one bad row would take
         out the whole facet query. SQLite's ``date()`` returns NULL on
-        unparseable strings, so the base implementation uses it; engines whose
+        unparsable strings, so the base implementation uses it; engines whose
         cast/extract raises on bad input (e.g. DuckDB, where ``date('')``
         errors) override with a try-cast form.
         """

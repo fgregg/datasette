@@ -180,8 +180,7 @@ class KeysetPaginator(Paginator):
             except IndexError:
                 # sort/sort_desc column missing from SELECT - look up by PK
                 prefix_where_clause = " and ".join(
-                    "{} = :pk{}".format(escape(pk), i)
-                    for i, pk in enumerate(self.pks)
+                    "{} = :pk{}".format(escape(pk), i) for i, pk in enumerate(self.pks)
                 )
                 prefix_lookup_sql = "select {} from {} where {}".format(
                     escape(sort or sort_desc), escape(table_name), prefix_where_clause

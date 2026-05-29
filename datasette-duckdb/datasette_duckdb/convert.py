@@ -21,7 +21,6 @@ import sys
 
 import duckdb
 
-
 _TYPE_MAP = {
     "text": "VARCHAR",
     "varchar": "VARCHAR",
@@ -127,15 +126,11 @@ def convert_sqlite_to_duckdb(src, dst):
                 defs = [f'"{n}" {ty}' for n, ty in m["columns"]]
                 if m["pks"]:
                     defs.append(
-                        "PRIMARY KEY ({})".format(
-                            ", ".join(f'"{p}"' for p in m["pks"])
-                        )
+                        "PRIMARY KEY ({})".format(", ".join(f'"{p}"' for p in m["pks"]))
                     )
                 if with_fks:
                     for frm, ref, to in m["fks"]:
-                        defs.append(
-                            f'FOREIGN KEY ("{frm}") REFERENCES "{ref}"("{to}")'
-                        )
+                        defs.append(f'FOREIGN KEY ("{frm}") REFERENCES "{ref}"("{to}")')
                 d.execute(f'DROP TABLE IF EXISTS "{t}"')
                 d.execute(f'CREATE TABLE "{t}" ({", ".join(defs)})')
 
