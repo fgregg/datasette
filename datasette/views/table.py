@@ -2080,12 +2080,6 @@ async def table_view_data(
         if data.get("expandable_columns"):
             url_labels_extra = {"_labels": "on"}
         url_csv_args = {"_size": "max", **url_labels_extra}
-        if datasette.setting("allow_csv_stream"):
-            # Stream the whole table, not just the first max_returned_rows page.
-            # `_size=max` only sets the page size; without `_stream` the table
-            # view's "CSV" link truncates at max_returned_rows (#8). The advanced
-            # export form keeps its own explicit "stream all rows" checkbox.
-            url_csv_args["_stream"] = "on"
         url_csv = datasette.urls.path(
             path_with_format(request=request, format="csv", extra_qs=url_csv_args)
         )

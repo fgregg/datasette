@@ -244,31 +244,6 @@ async def test_table_csv_stream(ds_client):
     assert len([b for b in response.content.split(b"\r\n") if b]) == 1002
 
 
-@pytest.mark.asyncio
-async def test_table_csv_link_streams_whole_table():
-    # End-to-end #8 guard: the table view's rendered "CSV" link must stream the
-    # whole table, not truncate at max_returned_rows. (Follows the literal link
-    # from the HTML, not a hand-built _stream URL.)
-    ds = Datasette(settings={"max_returned_rows": 3})
-    await ds.invoke_startup()
-    db = ds.add_memory_database("stream_link")
-    await db.execute_write_script(
-        "create table t (id integer primary key);"
-        "insert into t (id) values (1),(2),(3),(4),(5),(6),(7);"
-    )
-    html = (await ds.client.get("/stream_link/t")).text
-    csv_link = (
-        Soup(html, "html.parser")
-        .find("p", {"class": "export-links"})
-        .find("a", href=lambda h: h and ".csv" in h)
-    )
-    assert "_stream=on" in csv_link["href"]
-    response = await ds.client.get(csv_link["href"])
-    assert response.status_code == 200
-    # all 7 rows, not just the first max_returned_rows (3)
-    assert response.text == "id\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n"
-
-
 def test_csv_trace(app_client_with_trace):
     response = app_client_with_trace.get("/fixtures/simple_primary_key.csv?_trace=1")
     assert response.headers["content-type"] == "text/html; charset=utf-8"
