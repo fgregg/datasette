@@ -222,9 +222,7 @@ class SqliteIntrospector(Introspector):
         return await self.db.execute_fn(lambda conn: table_columns(conn, table))
 
     async def table_column_details(self, table):
-        return await self.db.execute_fn(
-            lambda conn: table_column_details(conn, table)
-        )
+        return await self.db.execute_fn(lambda conn: table_column_details(conn, table))
 
     async def column_details_with_uniqueness(self, table):
         # Returns {column_name: (type, is_unique)}
@@ -245,9 +243,7 @@ class SqliteIntrospector(Introspector):
         return await self.db.execute_fn(column_details)
 
     async def primary_keys(self, table):
-        return await self.db.execute_fn(
-            lambda conn: detect_primary_keys(conn, table)
-        )
+        return await self.db.execute_fn(lambda conn: detect_primary_keys(conn, table))
 
     async def fts_table(self, table):
         return await self.db.execute_fn(lambda conn: detect_fts(conn, table))
