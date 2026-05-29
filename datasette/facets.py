@@ -104,9 +104,7 @@ class Facet:
 
     def _supports(self, feature):
         # Whether this database's backend advertises a capability flag.
-        return getattr(
-            self.ds.get_database(self.database).backend.features, feature
-        )
+        return getattr(self.ds.get_database(self.database).backend.features, feature)
 
     def _escape(self, name):
         # Quote an identifier using this database's backend dialect.
