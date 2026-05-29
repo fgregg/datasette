@@ -220,32 +220,6 @@ class Backend:
     #: SQL-string generation for this backend.
     dialect: Dialect = Dialect()
 
-    def rowid_orderable(self, db) -> bool:
-        """Whether this backend's implicit rowid is usable as a keyset-pagination
-        tiebreaker for ``db`` (transient ordering within a paging session, not a
-        durable identity).
-
-        Requires the rowid to stay put across the multiple requests that make up
-        a paging session. The default is "orderable iff the backend has a rowid
-        at all". Backends whose rowid is only stable within a transaction (e.g.
-        DuckDB, whose rowid is a physical-storage position) must override to
-        require an immutable database.
-        """
-        return self.features.supports_rowid
-
-    def rowid_is_identity(self, db) -> bool:
-        """Whether this backend's rowid may be used as a *durable row identity*
-        — to mint row-page permalinks, the displayed key column, blob-download
-        links, etc.
-
-        Distinct from :meth:`rowid_orderable`: a rowid can be fine as a
-        transient ordering key while being unfit as a durable identifier (it
-        reshuffles across VACUUM / rebuilds — see issue #12). The default
-        mirrors historical behavior (identity iff the backend has a rowid);
-        backends that should never mint identity from rowid override to False.
-        """
-        return self.features.supports_rowid
-
     @classmethod
     def handles(cls, source: str) -> bool:
         """Whether this backend recognises a given path / URL source.
