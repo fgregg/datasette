@@ -244,6 +244,17 @@ def _sql_str(s):
     return "'" + s.replace("'", "''") + "'"
 
 
+# Match SQLite FTS5's default unicode61 tokenizer (what the source indexes use)
+# rather than DuckDB's defaults, so search behaves the same on both sites:
+#   * ignore='(\.|[^a-z0-9])+'  — keep DIGITS (DuckDB's default ignores [^a-z],
+#     which silently drops numbers; union locals are identified by numbers like
+#     "1398", so that broke numeric search entirely).
+#   * stemmer='none'   — SQLite FTS5 doesn't stem.
+#   * stopwords='none' — SQLite FTS5 doesn't drop stopwords (and union names
+#     contain "of"/"and"/etc.).
+_FTS_OPTIONS = r"stemmer='none', stopwords='none', ignore='(\.|[^a-z0-9])+'"
+
+
 def _create_fts_indexes(d, fts):
     """Build a DuckDB FTS index per detected source FTS config (#4).
 
@@ -252,6 +263,10 @@ def _create_fts_indexes(d, fts):
     rowid is a fine doc id *within an immutable converted file* (it's rebuilt
     with the data on every conversion); the search clause qualifies it to dodge
     a shadow-capture in the fts macro (see DuckDBDialect.fts_search_clause).
+
+    Tokenizer options (``_FTS_OPTIONS``) mirror SQLite FTS5 so search results
+    match the SQLite site; the dialect pairs this with ``conjunctive := true``
+    for SQLite's all-terms-must-match semantics.
 
     Resilient: if the fts extension can't be installed/loaded (e.g. offline),
     or one index fails, the data conversion is unaffected. Returns the list of
@@ -267,7 +282,7 @@ def _create_fts_indexes(d, fts):
     for base, cols in fts.items():
         args = ", ".join(_sql_str(a) for a in (base, "rowid", *cols))
         try:
-            d.execute(f"PRAGMA create_fts_index({args})")
+            d.execute(f"PRAGMA create_fts_index({args}, {_FTS_OPTIONS})")
             created.append((base, cols))
         except duckdb.Error:
             continue

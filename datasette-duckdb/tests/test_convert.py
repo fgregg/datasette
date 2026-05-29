@@ -289,16 +289,35 @@ def test_fts_index_mirrored_and_searchable(tmp_path):
             ).fetchall()
         ]
         assert schemas == ["fts_main_filing"]
+
+        def search(query, conjunctive=False):
+            extra = ", conjunctive := true" if conjunctive else ""
+            return [
+                r[0]
+                for r in d.execute(
+                    "select name from filing where "
+                    f"fts_main_filing.match_bm25(filing.rowid, ?{extra}) is not null "
+                    "order by id",
+                    [query],
+                ).fetchall()
+            ]
+
         # Search resolves via the qualified-rowid doc-id (the shadow-capture fix).
-        names = [
-            r[0]
-            for r in d.execute(
-                "select name from filing "
-                "where fts_main_filing.match_bm25(filing.rowid, ?) is not null "
-                "order by id",
-                ["steelworkers"],
-            ).fetchall()
+        assert search("steelworkers") == [
+            "United Steelworkers",
+            "Steelworkers District 7",
+        ]
+        # Digits are indexed (SQLite-parity tokenizer keeps numbers), so a union
+        # local number is searchable -- this is broken under DuckDB's defaults.
+        assert search("705") == ["Teamsters Local 705"]
+        # conjunctive AND: only the row with *both* terms (name + city columns).
+        assert search("steelworkers gary", conjunctive=True) == [
+            "Steelworkers District 7"
+        ]
+        # without conjunctive the same query is OR (both steelworkers rows).
+        assert search("steelworkers gary") == [
+            "United Steelworkers",
+            "Steelworkers District 7",
         ]
     finally:
         d.close()
-    assert names == ["United Steelworkers", "Steelworkers District 7"]

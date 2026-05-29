@@ -101,10 +101,17 @@ class DuckDBDialect(Dialect):
             pk = self.escape_identifier(fts_table) + ".rowid"
         else:
             pk = self.escape_identifier(fts_pk)
+        # conjunctive := true -> all query terms must match, matching SQLite
+        # FTS5's default (DuckDB's match_bm25 defaults to any-term/OR). Keeps
+        # multi-word searches like "SEIU 1398" precise instead of returning
+        # everything containing either term.
         if column is None:
-            return f"{macro}({pk}, :{param}) is not null"
+            return f"{macro}({pk}, :{param}, conjunctive := true) is not null"
         col_literal = "'" + column.replace("'", "''") + "'"
-        return f"{macro}({pk}, :{param}, fields := {col_literal}) is not null"
+        return (
+            f"{macro}({pk}, :{param}, fields := {col_literal}, "
+            "conjunctive := true) is not null"
+        )
 
     def date_extract_sql(self, column_sql):
         # DuckDB's date() raises on non-date input (date('') and date('garbage')
