@@ -77,7 +77,7 @@ def converted(tmp_path):
             )
         )
     _make_source(src, rows)
-    dropped, promotions = convert_sqlite_to_duckdb(str(src), str(dst))
+    dropped, promotions, _fts = convert_sqlite_to_duckdb(str(src), str(dst))
     return dst, dropped, promotions
 
 
@@ -237,3 +237,68 @@ def test_bigint_holds_integers(tmp_path):
     types = _duckdb_types(dst, "q")
     assert types["num"] == "BIGINT"
     assert types["code"] == "VARCHAR"
+
+
+# --- #4: FTS indexes mirrored from the SQLite source ---
+
+
+def test_fts_index_mirrored_and_searchable(tmp_path):
+    # Skip where the duckdb fts extension can't be installed/loaded (offline).
+    probe = duckdb.connect()
+    try:
+        probe.execute("INSTALL fts; LOAD fts;")
+    except duckdb.Error:
+        pytest.skip("duckdb fts extension unavailable")
+    finally:
+        probe.close()
+
+    src = tmp_path / "fts.db"
+    dst = tmp_path / "fts.duckdb"
+    con = sqlite3.connect(str(src))
+    con.execute("CREATE TABLE filing (id INTEGER PRIMARY KEY, name TEXT, city TEXT)")
+    con.executemany(
+        "INSERT INTO filing VALUES (?,?,?)",
+        [
+            (1, "United Steelworkers", "pittsburgh"),
+            (2, "Teamsters Local 705", "chicago"),
+            (3, "Steelworkers District 7", "gary"),
+        ],
+    )
+    # sqlite-utils enable-fts style virtual table
+    try:
+        con.execute(
+            "CREATE VIRTUAL TABLE filing_fts USING fts5(name, city, content=filing)"
+        )
+    except sqlite3.OperationalError:
+        con.close()
+        pytest.skip("sqlite3 build lacks FTS5")
+    con.commit()
+    con.close()
+
+    *_, fts_created = convert_sqlite_to_duckdb(str(src), str(dst))
+    # Detected the base table + indexed columns from the source vtable.
+    assert fts_created == [("filing", ["name", "city"])]
+
+    d = duckdb.connect(str(dst))
+    try:
+        schemas = [
+            r[0]
+            for r in d.execute(
+                "select schema_name from information_schema.schemata "
+                "where schema_name = 'fts_main_filing'"
+            ).fetchall()
+        ]
+        assert schemas == ["fts_main_filing"]
+        # Search resolves via the qualified-rowid doc-id (the shadow-capture fix).
+        names = [
+            r[0]
+            for r in d.execute(
+                "select name from filing "
+                "where fts_main_filing.match_bm25(filing.rowid, ?) is not null "
+                "order by id",
+                ["steelworkers"],
+            ).fetchall()
+        ]
+    finally:
+        d.close()
+    assert names == ["United Steelworkers", "Steelworkers District 7"]

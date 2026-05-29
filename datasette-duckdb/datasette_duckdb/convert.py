@@ -20,10 +20,15 @@ so tables are created in dependency order with inline FKs. Foreign keys that
 reference a missing table, or whose data has orphans, are dropped for that table
 (the data is still loaded) and reported.
 
+Source FTS virtual tables (``sqlite-utils enable-fts``) are mirrored into
+equivalent DuckDB FTS indexes (``_read_fts`` / ``_create_fts_indexes``), so a
+converted database is searchable out of the box (#4).
+
 Usage:  python -m datasette_duckdb.convert source.db dest.duckdb
 """
 
 import os
+import re
 import sqlite3
 import sys
 
@@ -192,8 +197,81 @@ def _read_schema(src):
             "pks": pks,
             "fks": fks,
         }
+    fts = _read_fts(cur, table_set)
     con.close()
-    return tables, meta
+    return tables, meta, fts
+
+
+# `content='<table>'` or `content=[<table>]` in an FTS5 CREATE statement names
+# the base (content) table the index covers.
+_FTS_CONTENT_RE = re.compile(r"content\s*=\s*['\[]?([A-Za-z0-9_]+)", re.IGNORECASE)
+
+
+def _read_fts(cur, table_set):
+    """Detect FTS virtual tables in the source and the base table + columns each
+    indexes, so the converter can rebuild an equivalent DuckDB FTS index (#4).
+
+    sqlite-utils ``enable-fts`` creates ``<table>_fts USING fts5(col, ...,
+    content=<table>)``. We read the content table from the CREATE statement and
+    the indexed columns from the vtable's own ``table_info``. Returns
+    ``{base_table: [columns]}`` for indexes whose base is a real converted table.
+    """
+    fts = {}
+    rows = cur.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL"
+    ).fetchall()
+    for name, sql in rows:
+        low = sql.lower()
+        if (
+            "using fts5" not in low
+            and "using fts4" not in low
+            and "using fts3" not in low
+        ):
+            continue
+        m = _FTS_CONTENT_RE.search(sql)
+        base = m.group(1) if m else None
+        if base not in table_set:
+            continue
+        # The vtable's user columns are the indexed columns (sqlite-utils names
+        # them identically to the base table's columns).
+        cols = [c[1] for c in cur.execute(f'PRAGMA table_info("{name}")').fetchall()]
+        if cols:
+            fts[base] = cols
+    return fts
+
+
+def _sql_str(s):
+    return "'" + s.replace("'", "''") + "'"
+
+
+def _create_fts_indexes(d, fts):
+    """Build a DuckDB FTS index per detected source FTS config (#4).
+
+    Uses ``rowid`` as the document id, matching Datasette's default ``fts_pk``
+    for a rowid-bearing backend, so search resolves without per-table config.
+    rowid is a fine doc id *within an immutable converted file* (it's rebuilt
+    with the data on every conversion); the search clause qualifies it to dodge
+    a shadow-capture in the fts macro (see DuckDBDialect.fts_search_clause).
+
+    Resilient: if the fts extension can't be installed/loaded (e.g. offline),
+    or one index fails, the data conversion is unaffected. Returns the list of
+    ``(table, columns)`` indexes actually created.
+    """
+    if not fts:
+        return []
+    try:
+        d.execute("INSTALL fts; LOAD fts;")
+    except duckdb.Error:
+        return []
+    created = []
+    for base, cols in fts.items():
+        args = ", ".join(_sql_str(a) for a in (base, "rowid", *cols))
+        try:
+            d.execute(f"PRAGMA create_fts_index({args})")
+            created.append((base, cols))
+        except duckdb.Error:
+            continue
+    return created
 
 
 def _topo_order(tables, meta):
@@ -222,14 +300,18 @@ def convert_sqlite_to_duckdb(src, dst, infer_types=True):
     type are promoted (VARCHAR->UUID/DATE/TIMESTAMP/BIGINT, DOUBLE->REAL) -- see
     ``_infer_tighter_types``.
 
-    Returns ``(dropped, promotions)`` where ``dropped`` is a list of
-    ``(table, reason)`` for foreign keys dropped as referential orphans, and
+    FTS indexes are rebuilt for every source FTS virtual table (#4), so a
+    converted database is searchable out of the box.
+
+    Returns ``(dropped, promotions, fts_created)``: ``dropped`` is a list of
+    ``(table, reason)`` for foreign keys dropped as referential orphans,
     ``promotions`` is ``{table: [(column, target_type), ...]}`` for the
-    content-promoted columns.
+    content-promoted columns, and ``fts_created`` is ``[(table, [columns]), ...]``
+    for the FTS indexes built.
     """
     if os.path.exists(dst):
         os.remove(dst)
-    tables, meta = _read_schema(src)
+    tables, meta, fts = _read_schema(src)
     order = _topo_order(tables, meta)
 
     d = duckdb.connect(dst)
@@ -240,6 +322,7 @@ def convert_sqlite_to_duckdb(src, dst, infer_types=True):
     d.execute(f"ATTACH '{src}' AS s (TYPE sqlite);")
     dropped = []
     promotions = {}
+    fts_created = []
     try:
         if infer_types:
             # Refine declared types from content before creating the tables, so
@@ -277,9 +360,12 @@ def convert_sqlite_to_duckdb(src, dst, infer_types=True):
                 d.execute(f'INSERT INTO "{t}" SELECT {select} FROM s."{t}"')
                 if m["fks"]:
                     dropped.append((t, str(e).splitlines()[0]))
+        # Tables (and their rowids) are populated now, so the FTS indexes can be
+        # built against them.
+        fts_created = _create_fts_indexes(d, fts)
     finally:
         d.close()
-    return dropped, promotions
+    return dropped, promotions, fts_created
 
 
 def main(argv=None):
@@ -288,12 +374,16 @@ def main(argv=None):
         print("usage: python -m datasette_duckdb.convert source.db dest.duckdb")
         return 1
     src, dst = argv
-    dropped, promotions = convert_sqlite_to_duckdb(src, dst)
+    dropped, promotions, fts_created = convert_sqlite_to_duckdb(src, dst)
     print(f"Converted {src} -> {dst}")
     if promotions:
         print("Columns promoted to tighter types by content inference:")
         for table, cols in promotions.items():
             print(f"  {table}: " + ", ".join(f"{c} -> {typ}" for c, typ in cols))
+    if fts_created:
+        print("FTS indexes created:")
+        for table, cols in fts_created:
+            print(f"  {table}: " + ", ".join(cols))
     if dropped:
         print("Foreign keys dropped (referential orphans / missing target):")
         for table, reason in dropped:
