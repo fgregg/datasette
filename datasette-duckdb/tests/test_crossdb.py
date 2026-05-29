@@ -7,10 +7,13 @@ against /_memory can join across them in DuckDB syntax.
 
 import asyncio
 
-import duckdb
 import pytest
 
-from datasette.app import Datasette
+# Skip where duckdb isn't installed (e.g. datasette core's own CI, which
+# collects this vendored dir but has no duckdb / plugin installed).
+duckdb = pytest.importorskip("duckdb")
+
+from datasette.app import Datasette  # noqa: E402
 
 
 def _make_db(path, val):
