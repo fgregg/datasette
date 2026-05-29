@@ -3,10 +3,17 @@ inference (#9): VARCHAR -> UUID/DATE/TIMESTAMP/BIGINT and DOUBLE -> REAL."""
 
 import sqlite3
 
-import duckdb
 import pytest
 
-from datasette_duckdb.convert import convert_sqlite_to_duckdb, _MIN_SAMPLE
+# These exercise the datasette-duckdb plugin. Skip where duckdb isn't installed
+# — e.g. datasette core's own CI, which collects this vendored dir but has no
+# duckdb (and no plugin) installed.
+duckdb = pytest.importorskip("duckdb")
+
+from datasette_duckdb.convert import (  # noqa: E402
+    convert_sqlite_to_duckdb,
+    _MIN_SAMPLE,
+)
 
 
 def _make_source(path, rows):
