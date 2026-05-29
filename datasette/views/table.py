@@ -154,6 +154,7 @@ async def display_columns_and_rows(
     description,
     rows,
     link_column=False,
+    rowid_identity=False,
     truncate_cells=0,
     sortable_columns=None,
     request=None,
@@ -185,8 +186,9 @@ async def display_columns_and_rows(
     pks = await db.primary_keys(table_name)
     pks_for_display = pks
     if not pks_for_display:
-        # Only fall back to rowid as the display key if the backend has one
-        pks_for_display = ["rowid"] if db.backend.features.supports_rowid else []
+        # rowid as the display key only when it's a usable durable identity
+        # (mutable db). On immutable dbs a keyless table has no shown key. (#12)
+        pks_for_display = ["rowid"] if rowid_identity else []
 
     columns = []
     for r in description:
@@ -248,10 +250,12 @@ async def display_columns_and_rows(
                 # If there's a simple primary key, don't repeat the value as it's
                 # already shown in the link column.
                 continue
-            if link_column and not pks and column == "rowid":
-                # No explicit primary key: the injected Link column already
-                # represents the row's identity via rowid — don't duplicate
-                # the rowid as a separate column.
+            if not pks and column == "rowid":
+                # No explicit primary key: rowid is selected only as an
+                # internal key (keyset pagination / the optional Link column).
+                # Never render it as a data cell — when link_column is set it'd
+                # duplicate the Link column; when it isn't (immutable db, #12)
+                # the rowid shouldn't be shown at all.
                 continue
 
             # First try column type render_cell, then plugins
@@ -351,6 +355,13 @@ async def display_columns_and_rows(
             )
         cell_rows.append(Row(cells))
 
+    # rowid is selected only as an internal key; never show it as a data
+    # column header. Drop it whenever it was injected (keyless table),
+    # independent of whether a Link column is rendered (#12: immutable keyless
+    # tables have neither a rowid column nor a Link column).
+    if not pks:
+        columns = [col for col in columns if col["name"] != "rowid"]
+
     if link_column:
         # Add the link column header.
         # If it's a simple primary key, we have to remove and re-add that column name at
@@ -367,9 +378,7 @@ async def display_columns_and_rows(
             }
         else:
             # No explicit primary key — the injected Link column represents
-            # the rowid, so drop the separate rowid header.
-            if not pks:
-                columns = [col for col in columns if col["name"] != "rowid"]
+            # the rowid (rowid header already dropped above).
             first_column = {
                 "name": "Link",
                 "sortable": False,
@@ -896,14 +905,20 @@ async def _columns_to_select(table_columns, pks, request):
     return columns
 
 
-async def _sortable_columns_for_table(datasette, database_name, table_name, use_rowid):
+async def _sortable_columns_for_table(
+    datasette, database_name, table_name, expose_rowid
+):
     db = datasette.databases[database_name]
     table_metadata = await datasette.table_config(database_name, table_name)
     if "sortable_columns" in table_metadata:
         sortable_columns = set(table_metadata["sortable_columns"])
     else:
         sortable_columns = set(await db.table_columns(table_name))
-    if use_rowid:
+    # Offer rowid as a user-sortable column only when it's exposed as identity
+    # (mutable db). Keyset pagination's order-by=rowid is independent of this,
+    # so an immutable keyless table still paginates without surfacing rowid in
+    # the sort UI. (#12)
+    if expose_rowid:
         sortable_columns.add("rowid")
     return sortable_columns
 
@@ -1177,11 +1192,18 @@ async def table_view_data(
     select_all_columns = ", ".join(escape(t) for t in table_columns)
 
     # rowid tables (no specified primary key) need a different SELECT - but
-    # only on a backend that provides a stable implicit rowid. A keyless table
-    # on a backend without rowid (like a view) falls back to offset pagination.
+    # only on a backend that provides an implicit rowid. A keyless table on a
+    # backend without rowid (like a view) falls back to offset pagination.
     use_rowid = not pks and not is_view and db.backend.features.supports_rowid
     # No stable row key -> offset pagination (views and keyless no-rowid tables)
     use_offset = not pks and not use_rowid
+    # rowid is fine as a *transient* key (keyset pagination within one served
+    # file) but NOT as a durable row identity: it reshuffles on VACUUM (SQLite)
+    # / rebuild (both engines), so a /<db>/<table>/<rowid> permalink or a shown
+    # rowid column points at a moving target on an immutable, rebuilt-from-
+    # source database. Treat rowid as identity (row-page links, displayed key)
+    # only on a *mutable* db; keyset pagination uses rowid regardless. See #12.
+    rowid_identity = use_rowid and db.is_mutable
     order_by = ""
     if use_rowid:
         select_specified_columns = f"rowid, {select_specified_columns}"
@@ -1240,7 +1262,7 @@ async def table_view_data(
 
     # Deal with custom sort orders
     sortable_columns = await _sortable_columns_for_table(
-        datasette, database_name, table_name, use_rowid
+        datasette, database_name, table_name, rowid_identity
     )
 
     sort, sort_desc, order_by = await _sort_order(
@@ -1614,7 +1636,8 @@ async def table_view_data(
             table_name,
             results.description,
             rows,
-            link_column=not use_offset,
+            link_column=(not is_view) and (bool(pks) or rowid_identity),
+            rowid_identity=rowid_identity,
             truncate_cells=datasette.setting("truncate_cells_html"),
             sortable_columns=sortable_columns,
             request=request,
@@ -2001,6 +2024,10 @@ async def table_view_data(
             for table_column in table_columns
             if table_column not in columns
         ]
+        if not rowid_identity:
+            # Don't surface rowid as a filterable column when it isn't exposed
+            # as identity (immutable keyless table) — keep it fully internal. (#12)
+            data["filter_columns"] = [c for c in data["filter_columns"] if c != "rowid"]
         url_labels_extra = {}
         if data.get("expandable_columns"):
             url_labels_extra = {"_labels": "on"}
