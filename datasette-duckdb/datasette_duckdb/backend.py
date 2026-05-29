@@ -127,23 +127,17 @@ class DuckDBBackend(Backend):
         supports_explain=True,
     )
 
-    def rowid_orderable(self, db):
-        # DuckDB's rowid is a physical-storage position, documented stable only
-        # *within a transaction*. Keyset pagination spans multiple requests
-        # (multiple transactions), so it's only safe when the database is
-        # immutable (read-only, physical layout frozen) — then rowid is stable
-        # across the paging session and gives keyset pagination on keyless
-        # tables. On a mutable db, fall back to offset.
-        return not db.is_mutable
-
-    # NB: no rowid_is_identity override — DuckDB inherits the base default
-    # (identity iff the backend has a rowid). rowid is not a stable permalink
-    # in *either* engine (SQLite renumbers on VACUUM/rebuild, DuckDB on
-    # rebuild), so singling DuckDB out here would just make the two backends
-    # diverge for a problem they share. Keep parity with SQLite's current
-    # behavior — keyless tables get rowid row-page links — and remove rowid
-    # identity for both at once via #12 (gate the base on db.is_mutable), so
-    # the fix lands upstream uniformly rather than per-backend.
+    # NB: no rowid_orderable / rowid_is_identity overrides — DuckDB inherits
+    # both base defaults (each = "has a rowid"), so it behaves exactly like
+    # SQLite. Neither capability is a real backend distinction:
+    #   * Identity: rowid is an unstable permalink in *both* engines (SQLite
+    #     renumbers on VACUUM/rebuild, DuckDB on rebuild).
+    #   * Orderability: keyset-on-rowid is best-effort in *both* — it assumes
+    #     rowids hold still during the paging session, which VACUUM (SQLite)
+    #     and rebuild/reclaim (DuckDB) both can break.
+    # So we don't special-case DuckDB. The genuinely-needed fix (stop minting
+    # rowid identity on immutable/rebuilt DBs) belongs in the shared base,
+    # gated on db.is_mutable, applied to both engines at once — see #12.
 
     def connect(self, db, write=False):
         import duckdb
