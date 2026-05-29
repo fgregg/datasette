@@ -7,6 +7,13 @@ constraints and types. This instead reads the SQLite schema and recreates each
 table with proper DuckDB types + PK + FK, loading data with ``TRY_CAST`` to cope
 with SQLite's loose typing (e.g. ``''`` in an integer column -> NULL).
 
+SQLite's declared types are advisory, and most importers default a column to
+TEXT whenever they're unsure -- so a column of uniform ``'YYYY-MM-DD'`` strings
+arrives declared TEXT even though it's really a DATE. After mapping declared
+types, a content-inference pass (``_infer_tighter_types``) probes each VARCHAR
+column with DuckDB's own ``TRY_CAST`` and promotes it where the data is
+uniformly a tighter type. Phase 1 (#9) infers DATE only.
+
 DuckDB enforces foreign keys at insert and has no ``ALTER ... ADD FOREIGN KEY``,
 so tables are created in dependency order with inline FKs. Foreign keys that
 reference a missing table, or whose data has orphans, are dropped for that table
@@ -43,6 +50,51 @@ _TYPE_MAP = {
 
 def _map_type(sqlite_type):
     return _TYPE_MAP.get((sqlite_type or "").strip().lower(), "VARCHAR")
+
+
+# Don't infer a tighter type from too few observed values -- an all-empty
+# snapshot column would otherwise "pass" every probe on zero evidence. See #9.
+_MIN_SAMPLE = 100
+
+
+def _infer_tighter_types(d, table, columns):
+    """Promote VARCHAR columns whose data is uniformly a tighter type.
+
+    Probes the *attached source* (``s."table"``, read as VARCHAR via
+    ``sqlite_all_varchar``) with DuckDB's own ``TRY_CAST`` and promotes on a
+    clean, well-sampled fit.
+
+    Phase 1 (#9): DATE only. A column promotes to DATE iff every non-null,
+    non-empty value casts to DATE *and none carries a non-midnight time* -- so a
+    real datetime column isn't silently truncated to a date; it stays VARCHAR
+    until the TIMESTAMP phase. Strict: a single unparsable value blocks it.
+
+    Returns ``(refined_columns, promoted_names)``.
+    """
+    candidates = [n for n, ty in columns if ty == "VARCHAR"]
+    if not candidates:
+        return columns, []
+    # One scan over the table: per candidate, count non-empty values, the ones
+    # that fail a DATE cast, and the ones that carry a real time-of-day (a
+    # TIMESTAMP that isn't its own date at midnight -> DATE would lose data).
+    aggs = []
+    for n in candidates:
+        ne = f'"{n}" IS NOT NULL AND "{n}" <> \'\''
+        aggs.append(f"COUNT(*) FILTER (WHERE {ne})")
+        aggs.append(f'COUNT(*) FILTER (WHERE {ne} AND TRY_CAST("{n}" AS DATE) IS NULL)')
+        aggs.append(
+            f"COUNT(*) FILTER (WHERE {ne} "
+            f'AND TRY_CAST("{n}" AS TIMESTAMP) IS NOT NULL '
+            f'AND TRY_CAST("{n}" AS TIMESTAMP) <> CAST(TRY_CAST("{n}" AS DATE) AS TIMESTAMP))'
+        )
+    row = d.execute(f'SELECT {", ".join(aggs)} FROM s."{table}"').fetchone()
+    promoted = set()
+    for i, n in enumerate(candidates):
+        n_nonempty, n_bad_date, n_lossy_time = row[3 * i : 3 * i + 3]
+        if n_nonempty >= _MIN_SAMPLE and n_bad_date == 0 and n_lossy_time == 0:
+            promoted.add(n)
+    refined = [(n, "DATE" if n in promoted else ty) for n, ty in columns]
+    return refined, [n for n, _ in columns if n in promoted]
 
 
 def _read_schema(src):
@@ -96,11 +148,15 @@ def _topo_order(tables, meta):
     return order
 
 
-def convert_sqlite_to_duckdb(src, dst):
+def convert_sqlite_to_duckdb(src, dst, infer_types=True):
     """Convert SQLite db at ``src`` to a DuckDB file at ``dst`` (overwritten).
 
-    Returns a list of ``(table, reason)`` for foreign keys that had to be
-    dropped (referential orphans).
+    With ``infer_types`` (default), VARCHAR columns whose data is uniformly a
+    tighter type are promoted (phase 1: DATE) -- see ``_infer_tighter_types``.
+
+    Returns ``(dropped, promotions)`` where ``dropped`` is a list of
+    ``(table, reason)`` for foreign keys dropped as referential orphans, and
+    ``promotions`` is ``{table: [column, ...]}`` for content-promoted columns.
     """
     if os.path.exists(dst):
         os.remove(dst)
@@ -114,7 +170,16 @@ def convert_sqlite_to_duckdb(src, dst):
     d.execute("SET GLOBAL sqlite_all_varchar=true;")
     d.execute(f"ATTACH '{src}' AS s (TYPE sqlite);")
     dropped = []
+    promotions = {}
     try:
+        if infer_types:
+            # Refine declared types from content before creating the tables, so
+            # CREATE declares the tighter type and INSERT's TRY_CAST targets it.
+            for t in order:
+                refined, promoted = _infer_tighter_types(d, t, meta[t]["columns"])
+                meta[t]["columns"] = refined
+                if promoted:
+                    promotions[t] = promoted
         for t in order:
             m = meta[t]
             select = ", ".join(
@@ -145,7 +210,7 @@ def convert_sqlite_to_duckdb(src, dst):
                     dropped.append((t, str(e).splitlines()[0]))
     finally:
         d.close()
-    return dropped
+    return dropped, promotions
 
 
 def main(argv=None):
@@ -154,8 +219,12 @@ def main(argv=None):
         print("usage: python -m datasette_duckdb.convert source.db dest.duckdb")
         return 1
     src, dst = argv
-    dropped = convert_sqlite_to_duckdb(src, dst)
+    dropped, promotions = convert_sqlite_to_duckdb(src, dst)
     print(f"Converted {src} -> {dst}")
+    if promotions:
+        print("Columns promoted from VARCHAR by content inference:")
+        for table, cols in promotions.items():
+            print(f"  {table}: " + ", ".join(f"{c} -> DATE" for c in cols))
     if dropped:
         print("Foreign keys dropped (referential orphans / missing target):")
         for table, reason in dropped:
