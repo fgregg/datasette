@@ -266,10 +266,13 @@ async def _datasette_with_sleeping_execute(tmp_path, sleep_ms=200):
     ds = Datasette([str(db_path)], internal=str(internal_path))
     loop = asyncio.get_running_loop()
     sql_started = asyncio.Event()
-    original_prepare_connection = ds._prepare_connection
+    # Inject a sleep_ms() SQL function by wrapping the backend's
+    # prepare_connection for the database the query runs against.
+    db = ds.get_database()
+    original_prepare_connection = db.backend.prepare_connection
 
-    def prepare_connection(conn, name):
-        original_prepare_connection(conn, name)
+    def prepare_connection(conn, datasette, database_name):
+        original_prepare_connection(conn, datasette, database_name)
 
         def sleep_ms(ms):
             loop.call_soon_threadsafe(sql_started.set)
@@ -278,7 +281,7 @@ async def _datasette_with_sleeping_execute(tmp_path, sleep_ms=200):
 
         conn.create_function("sleep_ms", 1, sleep_ms)
 
-    ds._prepare_connection = prepare_connection
+    db.backend.prepare_connection = prepare_connection
     task = asyncio.create_task(
         ds.get_database().execute(
             f"select sleep_ms({sleep_ms})", custom_time_limit=1000

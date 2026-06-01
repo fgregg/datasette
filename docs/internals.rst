@@ -2060,16 +2060,12 @@ The internal database schema is as follows:
     CREATE TABLE catalog_tables (
         database_name TEXT,
         table_name TEXT,
-        rootpage INTEGER,
-        sql TEXT,
         PRIMARY KEY (database_name, table_name),
         FOREIGN KEY (database_name) REFERENCES catalog_databases(database_name)
     );
     CREATE TABLE catalog_views (
         database_name TEXT,
         view_name TEXT,
-        rootpage INTEGER,
-        sql TEXT,
         PRIMARY KEY (database_name, view_name),
         FOREIGN KEY (database_name) REFERENCES catalog_databases(database_name)
     );
@@ -2087,30 +2083,12 @@ The internal database schema is as follows:
         FOREIGN KEY (database_name) REFERENCES catalog_databases(database_name),
         FOREIGN KEY (database_name, table_name) REFERENCES catalog_tables(database_name, table_name)
     );
-    CREATE TABLE catalog_indexes (
-        database_name TEXT,
-        table_name TEXT,
-        seq INTEGER,
-        name TEXT,
-        "unique" INTEGER,
-        origin TEXT,
-        partial INTEGER,
-        PRIMARY KEY (database_name, table_name, name),
-        FOREIGN KEY (database_name) REFERENCES catalog_databases(database_name),
-        FOREIGN KEY (database_name, table_name) REFERENCES catalog_tables(database_name, table_name)
-    );
     CREATE TABLE catalog_foreign_keys (
         database_name TEXT,
         table_name TEXT,
-        id INTEGER,
-        seq INTEGER,
-        "table" TEXT,
-        "from" TEXT,
-        "to" TEXT,
-        on_update TEXT,
-        on_delete TEXT,
-        match TEXT,
-        PRIMARY KEY (database_name, table_name, id, seq),
+        "column" TEXT,
+        other_table TEXT,
+        other_column TEXT,
         FOREIGN KEY (database_name) REFERENCES catalog_databases(database_name),
         FOREIGN KEY (database_name, table_name) REFERENCES catalog_tables(database_name, table_name)
     );

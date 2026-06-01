@@ -951,6 +951,17 @@ async def test_upgrade_metadata(metadata, expected_config, expected_metadata):
     assert response2.json() == expected_metadata
 
 
+@pytest.mark.asyncio
+async def test_expand_foreign_keys_empty_values(ds_client):
+    # An empty value list (e.g. a 0-row result) must return {} without building
+    # `... in ()`, which is a syntax error on backends that reject an empty IN
+    # list (DuckDB; SQLite tolerates it). facetable._city_id is a foreign key.
+    result = await ds_client.ds.expand_foreign_keys(
+        None, "fixtures", "facetable", "_city_id", []
+    )
+    assert result == {}
+
+
 class Either:
     def __init__(self, a, b):
         self.a = a

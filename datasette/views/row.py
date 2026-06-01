@@ -8,7 +8,6 @@ from datasette.utils import (
     CustomRow,
     make_slot_function,
     to_css_class,
-    escape_sqlite,
 )
 from datasette.plugins import pm
 import json
@@ -240,8 +239,8 @@ class RowView(DataView):
         sql = "select " + ", ".join(
             [
                 "(select count(*) from {table} where {column}=:id)".format(
-                    table=escape_sqlite(fk["other_table"]),
-                    column=escape_sqlite(fk["other_column"]),
+                    table=db.dialect.escape_identifier(fk["other_table"]),
+                    column=db.dialect.escape_identifier(fk["other_column"]),
                 )
                 for fk in foreign_keys
             ]

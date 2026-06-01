@@ -3,7 +3,7 @@ Tests for the datasette.database.Database class
 """
 
 from datasette.app import Datasette
-from datasette.database import Database, Results, MultipleValues
+from datasette.database import Database, Results, MultipleValues, QueryError
 from datasette.database import DatasetteClosedError
 from datasette.utils.sqlite import sqlite3, sqlite_version
 from datasette.utils import Column
@@ -505,7 +505,8 @@ async def test_execute_write_many(db):
 
 @pytest.mark.asyncio
 async def test_execute_write_has_correctly_prepared_connection(db):
-    # The sleep() function is only available if ds._prepare_connection() was called
+    # The sleep() function is only available if the backend's prepare_connection()
+    # ran (it fires the prepare_connection plugin hook that registers sleep())
     await db.execute_write("select sleep(0.01)")
 
 
@@ -702,7 +703,7 @@ async def test_database_memory_name(app_client):
 async def test_in_memory_databases_forbid_writes(app_client):
     ds = app_client.ds
     db = ds.add_database(Database(ds, memory_name="test"))
-    with pytest.raises(sqlite3.OperationalError):
+    with pytest.raises(QueryError):
         await db.execute("create table foo (t text)")
     assert await db.table_names() == []
     # Using db.execute_write() should work:

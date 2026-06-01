@@ -18,7 +18,6 @@ from .app import (
     Datasette,
     DEFAULT_SETTINGS,
     SETTINGS,
-    SQLITE_LIMIT_ATTACHED,
     pm,
 )
 from .utils import (
@@ -133,16 +132,31 @@ def cli():
 
 @cli.command()
 @click.argument("files", type=click.Path(exists=True), nargs=-1)
+@click.option(
+    "-c",
+    "--config",
+    type=click.File(mode="r"),
+    help=(
+        "Path to JSON/YAML Datasette configuration file. Use to inspect "
+        "databases mounted by a backend plugin (e.g. datasette-duckdb) that "
+        "registers them via plugins.<plugin>.databases — without -c, inspect "
+        "only sees files passed as arguments, which are opened with the "
+        "default SQLite backend."
+    ),
+)
 @click.option("--inspect-file", default="-")
 @sqlite_extensions
-def inspect(files, inspect_file, sqlite_extensions):
+def inspect(files, config, inspect_file, sqlite_extensions):
     """
     Generate JSON summary of provided database files
 
     This can then be passed to "datasette --inspect-file" to speed up count
     operations against immutable database files.
     """
-    inspect_data = run_sync(lambda: inspect_(files, sqlite_extensions))
+    if not files and not config:
+        raise click.UsageError("Pass database files and/or -c config")
+    config_data = parse_metadata(config.read()) if config else None
+    inspect_data = run_sync(lambda: inspect_(files, config_data, sqlite_extensions))
     if inspect_file == "-":
         sys.stdout.write(json.dumps(inspect_data, indent=2))
     else:
@@ -150,10 +164,21 @@ def inspect(files, inspect_file, sqlite_extensions):
             fp.write(json.dumps(inspect_data, indent=2))
 
 
-async def inspect_(files, sqlite_extensions):
-    app = Datasette([], immutables=files, sqlite_extensions=sqlite_extensions)
+async def inspect_(files, config, sqlite_extensions):
+    app = Datasette(
+        [],
+        immutables=files,
+        config=config,
+        sqlite_extensions=sqlite_extensions,
+    )
+    # Backend plugins (e.g. datasette-duckdb) mount their databases in
+    # the startup hook off of plugin config. Without this, app.databases
+    # only contains what was passed as immutables=.
+    await app.invoke_startup()
     data = {}
     for name, database in app.databases.items():
+        if database.is_memory:
+            continue
         counts = await database.table_counts(limit=3600 * 1000)
         data[name] = {
             "hash": database.hash,
@@ -673,6 +698,10 @@ def serve(
     except StartupError as e:
         raise click.ClickException(e.args[0])
 
+    # After startup: the crossdb host's real backend and any plugin-mounted
+    # databases are now in place, so the attach-limit warning can be accurate.
+    warn_if_crossdb_over_limit(ds)
+
     if headers and not get:
         raise click.ClickException("--headers can only be used with --get")
 
@@ -886,15 +915,31 @@ async def check_databases(ds):
             raise click.UsageError(
                 f"Connection to {database.path} failed check: {str(e.args[0])}"
             )
-    # If --crossdb and more than SQLITE_LIMIT_ATTACHED show warning
-    if (
-        ds.crossdb
-        and len([db for db in ds.databases.values() if not db.is_memory])
-        > SQLITE_LIMIT_ATTACHED
-    ):
+
+
+def warn_if_crossdb_over_limit(ds):
+    # The crossdb host (_memory) can only ATTACH so many databases, and the
+    # ceiling is the host backend's: SQLite caps it, DuckDB does not. Count only
+    # the databases that host will actually attach (same backend, non-memory).
+    # Runs after invoke_startup so the host's real backend and any
+    # plugin-mounted databases are in place.
+    if not ds.crossdb:
+        return
+    host = ds.databases.get("_memory")
+    if host is None:
+        return
+    limit = host.backend.crossdb_attach_limit
+    if limit is None:
+        return
+    attachable = [
+        db
+        for db in ds.databases.values()
+        if not db.is_memory and db.backend.name == host.backend.name
+    ]
+    if len(attachable) > limit:
         msg = (
             "Warning: --crossdb only works with the first {} attached databases".format(
-                SQLITE_LIMIT_ATTACHED
+                limit
             )
         )
         click.echo(click.style(msg, bold=True, fg="yellow"), err=True)

@@ -3,7 +3,7 @@ from datasette.resources import DatabaseResource
 from datasette.views.base import DatasetteError
 from datasette.utils.asgi import BadRequest
 import json
-from .utils import detect_json1, escape_sqlite, path_with_removed_args
+from .utils import escape_sqlite, path_with_removed_args
 
 
 @hookimpl(specname="filters_from_request")
@@ -54,7 +54,14 @@ def search_filters(request, database, table, datasette):
         fts_table = request.args.get("_fts_table")
         fts_table = fts_table or table_metadata.get("fts_table")
         fts_table = fts_table or await db.fts_table(table)
-        fts_pk = request.args.get("_fts_pk", table_metadata.get("fts_pk", "rowid"))
+        fts_pk = request.args.get("_fts_pk") or table_metadata.get("fts_pk")
+        if not fts_pk:
+            # Default to rowid where the backend has one, else the table's PK
+            if db.backend.features.supports_rowid:
+                fts_pk = "rowid"
+            else:
+                pks = await db.primary_keys(table)
+                fts_pk = pks[0] if pks else "rowid"
         search_args = {
             key: request.args[key]
             for key in request.args
@@ -76,12 +83,12 @@ def search_filters(request, database, table, datasette):
                 # Simple ?_search=xxx
                 search = search_args["_search"]
                 where_clauses.append(
-                    "{fts_pk} in (select rowid from {fts_table} where {fts_table} match {match_clause})".format(
-                        fts_table=escape_sqlite(fts_table),
-                        fts_pk=escape_sqlite(fts_pk),
-                        match_clause=(
-                            ":search" if search_mode_raw else "escape_fts(:search)"
-                        ),
+                    db.dialect.fts_search_clause(
+                        fts_table=fts_table,
+                        fts_pk=fts_pk,
+                        column=None,
+                        param="search",
+                        raw=search_mode_raw,
                     )
                 )
                 human_descriptions.append(f'search matches "{search}"')
@@ -95,14 +102,12 @@ def search_filters(request, database, table, datasette):
                         raise BadRequest("Cannot search by that column")
 
                     where_clauses.append(
-                        "rowid in (select rowid from {fts_table} where {search_col} match {match_clause})".format(
-                            fts_table=escape_sqlite(fts_table),
-                            search_col=escape_sqlite(search_col),
-                            match_clause=(
-                                ":search_{}".format(i)
-                                if search_mode_raw
-                                else "escape_fts(:search_{})".format(i)
-                            ),
+                        db.dialect.fts_search_clause(
+                            fts_table=fts_table,
+                            fts_pk=fts_pk,
+                            column=search_col,
+                            param="search_{}".format(i),
+                            raw=search_mode_raw,
                         )
                     )
                     human_descriptions.append(
@@ -170,12 +175,22 @@ class FilterArguments:
         self.extra_context = extra_context or {}
 
 
+def _quote_column(column, dialect):
+    # Route identifier quoting through the dialect when one is supplied, so a
+    # non-SQLite backend gets its own quoting (DuckDB rejects SQLite's [bracket]
+    # form). SqliteDialect.escape_identifier is escape_sqlite, so SQLite output
+    # is unchanged. Falls back to escape_sqlite when no dialect is passed.
+    if dialect is not None:
+        return dialect.escape_identifier(column)
+    return escape_sqlite(column)
+
+
 class Filter:
     key = None
     display = None
     no_argument = False
 
-    def where_clause(self, table, column, value, param_counter):
+    def where_clause(self, table, column, value, param_counter, dialect=None):
         raise NotImplementedError
 
     def human_clause(self, column, value):
@@ -201,7 +216,9 @@ class TemplatedFilter(Filter):
         self.numeric = numeric
         self.no_argument = no_argument
 
-    def where_clause(self, table, column, value, param_counter):
+    def where_clause(self, table, column, value, param_counter, dialect=None):
+        # Templates quote the column inline with ANSI "{c}", which is portable,
+        # so the dialect isn't needed here.
         converted = self.format.format(value)
         if self.numeric and converted.isdigit():
             converted = int(converted)
@@ -233,10 +250,10 @@ class InFilter(Filter):
         else:
             return [v.strip() for v in value.split(",")]
 
-    def where_clause(self, table, column, value, param_counter):
+    def where_clause(self, table, column, value, param_counter, dialect=None):
         values = self.split_value(value)
         params = [f":p{param_counter + i}" for i in range(len(values))]
-        sql = f"{escape_sqlite(column)} in ({', '.join(params)})"
+        sql = f"{_quote_column(column, dialect)} in ({', '.join(params)})"
         return sql, values
 
     def human_clause(self, column, value):
@@ -247,10 +264,10 @@ class NotInFilter(InFilter):
     key = "notin"
     display = "not in"
 
-    def where_clause(self, table, column, value, param_counter):
+    def where_clause(self, table, column, value, param_counter, dialect=None):
         values = self.split_value(value)
         params = [f":p{param_counter + i}" for i in range(len(values))]
-        sql = f"{escape_sqlite(column)} not in ({', '.join(params)})"
+        sql = f"{_quote_column(column, dialect)} not in ({', '.join(params)})"
         return sql, values
 
     def human_clause(self, column, value):
@@ -317,24 +334,22 @@ class Filters:
             InFilter(),
             NotInFilter(),
         ]
-        + (
-            [
-                TemplatedFilter(
-                    "arraycontains",
-                    "array contains",
-                    """:{p} in (select value from json_each([{t}].[{c}]))""",
-                    '{c} contains "{v}"',
-                ),
-                TemplatedFilter(
-                    "arraynotcontains",
-                    "array does not contain",
-                    """:{p} not in (select value from json_each([{t}].[{c}]))""",
-                    '{c} does not contain "{v}"',
-                ),
-            ]
-            if detect_json1()
-            else []
-        )
+        + [
+            # Catalog always lists these; only offered to a backend that
+            # advertises supports_json (see _feature_gated).
+            TemplatedFilter(
+                "arraycontains",
+                "array contains",
+                """:{p} in (select value from json_each([{t}].[{c}]))""",
+                '{c} contains "{v}"',
+            ),
+            TemplatedFilter(
+                "arraynotcontains",
+                "array does not contain",
+                """:{p} not in (select value from json_each([{t}].[{c}]))""",
+                '{c} does not contain "{v}"',
+            ),
+        ]
         + [
             TemplatedFilter(
                 "date", "date", 'date("{c}") = :{p}', '"{c}" is on date {v}'
@@ -365,14 +380,34 @@ class Filters:
             ),
         ]
     )
-    _filters_by_key = {f.key: f for f in _filters}
+    # An operator is only offered when the backend advertises the matching
+    # capability flag; operators absent from this map are always available.
+    _feature_gated = {
+        "glob": "supports_glob",
+        "arraycontains": "supports_json",
+        "arraynotcontains": "supports_json",
+    }
 
-    def __init__(self, pairs):
+    def __init__(self, pairs, features=None):
         self.pairs = pairs
+        self.features = features
+        if features is None:
+            # No backend supplied: offer the full catalog (used by tests and
+            # any caller that doesn't care about capabilities).
+            enabled = list(self._filters)
+        else:
+            enabled = [
+                f
+                for f in self._filters
+                if self._feature_gated.get(f.key) is None
+                or getattr(features, self._feature_gated[f.key])
+            ]
+        self._enabled_filters = enabled
+        self._filters_by_key = {f.key: f for f in enabled}
 
     def lookups(self):
         """Yields (lookup, display, no_argument) pairs"""
-        for filter in self._filters:
+        for filter in self._enabled_filters:
             yield filter.key, filter.display, filter.no_argument
 
     def human_description_en(self, extra=None):
@@ -408,14 +443,16 @@ class Filters:
     def has_selections(self):
         return bool(self.pairs)
 
-    def build_where_clauses(self, table):
+    def build_where_clauses(self, table, dialect=None):
         sql_bits = []
         params = {}
         i = 0
         for column, lookup, value in self.selections():
             filter = self._filters_by_key.get(lookup, None)
             if filter:
-                sql_bit, param = filter.where_clause(table, column, value, i)
+                sql_bit, param = filter.where_clause(
+                    table, column, value, i, dialect=dialect
+                )
                 sql_bits.append(sql_bit)
                 if param is not None:
                     if not isinstance(param, list):

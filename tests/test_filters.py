@@ -82,6 +82,25 @@ def test_build_where(args, expected_where, expected_params):
     assert {f"p{i}": param for i, param in enumerate(expected_params)} == actual_params
 
 
+class _ANSIDialect:
+    """Minimal stand-in for a non-SQLite dialect (always ANSI-quotes)."""
+
+    def escape_identifier(self, name):
+        return '"' + name.replace('"', '""') + '"'
+
+
+@pytest.mark.parametrize("lookup,op", [("in", "in"), ("notin", "not in")])
+def test_in_notin_route_quoting_through_dialect(lookup, op):
+    # `order` is a reserved word, so escape_sqlite brackets it (SQLite-only,
+    # rejected by DuckDB). Without a dialect we keep that behavior; with one,
+    # in/notin quote through it -- ANSI here, valid on DuckDB (#5).
+    f = Filters(sorted([(f"order__{lookup}", "1,2")]))
+    default_bits, _ = f.build_where_clauses("t")
+    assert default_bits == [f"[order] {op} (:p0, :p1)"]
+    ansi_bits, _ = f.build_where_clauses("t", _ANSIDialect())
+    assert ansi_bits == [f'"order" {op} (:p0, :p1)']
+
+
 @pytest.mark.asyncio
 async def test_through_filters_from_request(ds_client):
     request = Request.fake(

@@ -1,14 +1,25 @@
 import json
 import urllib
 from datasette import hookimpl
-from datasette.database import QueryInterrupted
+from datasette.database import QueryInterrupted, QueryError
 from datasette.utils import (
-    escape_sqlite,
     path_with_added_args,
     path_with_removed_args,
-    detect_json1,
-    sqlite3,
 )
+
+
+def _is_temporal_type(column_type) -> bool:
+    """True if a backend column type name denotes a date/time value.
+
+    Used by DateFacet to suggest date faceting straight from the catalog when
+    the backend already types the column (DuckDB DATE/TIMESTAMP), skipping the
+    data-sniffing probe. SQLite reports affinity-only types (usually no DATE),
+    so this simply returns False there and the probe path is used instead.
+    """
+    if not column_type:
+        return False
+    t = str(column_type).upper()
+    return any(k in t for k in ("DATE", "TIME", "TIMESTAMP"))
 
 
 def load_facet_configs(request, table_config):
@@ -57,10 +68,10 @@ def load_facet_configs(request, table_config):
 
 @hookimpl
 def register_facet_classes():
-    classes = [ColumnFacet, DateFacet]
-    if detect_json1():
-        classes.append(ArrayFacet)
-    return classes
+    # ArrayFacet is always registered; it no-ops for a database whose backend
+    # does not advertise supports_json (see ArrayFacet), replacing the old
+    # global detect_json1() gate.
+    return [ColumnFacet, DateFacet, ArrayFacet]
 
 
 class Facet:
@@ -90,6 +101,14 @@ class Facet:
         self.table_config = table_config
         # row_count can be None, in which case we calculate it ourselves:
         self.row_count = row_count
+
+    def _supports(self, feature):
+        # Whether this database's backend advertises a capability flag.
+        return getattr(self.ds.get_database(self.database).backend.features, feature)
+
+    def _escape(self, name):
+        # Quote an identifier using this database's backend dialect.
+        return self.ds.get_database(self.database).dialect.escape_identifier(name)
 
     def get_configs(self):
         configs = load_facet_configs(self.request, self.table_config)
@@ -167,7 +186,7 @@ class ColumnFacet(Facet):
                 group by value
                 limit {limit}
             """.format(
-                column=escape_sqlite(column),
+                column=self._escape(column),
                 sql=self.sql,
                 limit=facet_size + 1,
                 suggest_consider=self.suggest_consider,
@@ -233,7 +252,7 @@ class ColumnFacet(Facet):
                 )
                 where {col} is not null
                 group by {col} order by count desc, value limit {limit}
-            """.format(col=escape_sqlite(column), sql=self.sql, limit=facet_size + 1)
+            """.format(col=self._escape(column), sql=self.sql, limit=facet_size + 1)
             try:
                 facet_rows_results = await self.ds.execute(
                     self.database,
@@ -308,6 +327,8 @@ class ArrayFacet(Facet):
         return True
 
     async def suggest(self):
+        if not self._supports("supports_json"):
+            return []
         columns = await self.get_columns(self.sql, self.params)
         suggested_facets = []
         already_enabled = [c["config"]["simple"] for c in self.get_configs()]
@@ -321,7 +342,7 @@ class ArrayFacet(Facet):
                 from limited
                 where {column} is not null and {column} != ''
             """.format(
-                column=escape_sqlite(column),
+                column=self._escape(column),
                 sql=self.sql,
                 suggest_consider=self.suggest_consider,
             )
@@ -347,7 +368,7 @@ class ArrayFacet(Facet):
                                 "and {column} != '' "
                                 "and json_array_length({column}) > 0 "
                                 "limit 100"
-                            ).format(column=escape_sqlite(column), sql=self.sql),
+                            ).format(column=self._escape(column), sql=self.sql),
                             self.params,
                             truncate=False,
                             custom_time_limit=self.ds.setting(
@@ -373,12 +394,14 @@ class ArrayFacet(Facet):
                                 ),
                             }
                         )
-            except (QueryInterrupted, sqlite3.OperationalError):
+            except (QueryInterrupted, QueryError):
                 continue
         return suggested_facets
 
     async def facet_results(self):
         # self.configs should be a plain list of columns
+        if not self._supports("supports_json"):
+            return [], []
         facet_results = []
         facets_timed_out = []
 
@@ -408,7 +431,7 @@ class ArrayFacet(Facet):
                 order by
                     count(*) desc, value limit {limit}
             """.format(
-                col=escape_sqlite(column),
+                col=self._escape(column),
                 sql=self.sql,
                 limit=facet_size + 1,
             )
@@ -471,16 +494,61 @@ class DateFacet(Facet):
     async def suggest(self):
         columns = await self.get_columns(self.sql, self.params)
         already_enabled = [c["config"]["simple"] for c in self.get_configs()]
+        db = self.ds.get_database(self.database)
+        dialect = db.dialect
+
+        # If the backend already types these columns as temporal (DATE /
+        # TIMESTAMP / etc.), the catalog is a better signal than probing the
+        # data — suggest those directly, no SQL. Only available for a real
+        # table (suggest also runs over arbitrary SQL).
+        temporal_columns = set()
+        if self.table:
+            try:
+                for col in await db.table_column_details(self.table):
+                    if _is_temporal_type(col.type):
+                        temporal_columns.add(col.name)
+            except Exception:
+                pass
+
         suggested_facets = []
         for column in columns:
             if column in already_enabled:
                 continue
-            # Does this column contain any dates in the first 100 rows?
+
+            def _add():
+                suggested_facets.append(
+                    {
+                        "name": column,
+                        "type": "date",
+                        "toggle_url": self.ds.absolute_url(
+                            self.request,
+                            self.ds.urls.path(
+                                path_with_added_args(
+                                    self.request, {"_facet_date": column}
+                                )
+                            ),
+                        ),
+                    }
+                )
+
+            if column in temporal_columns:
+                _add()
+                continue
+
+            # Otherwise probe: does this column contain any dates in the first
+            # 100 rows? The "looks like a date" predicate is dialect-specific
+            # (SQLite needs a glob guard so date() doesn't misread bare numbers
+            # as Julian days; DuckDB's try_cast is strict). date_extract_sql
+            # must return NULL — never raise — on non-date values.
             suggested_facet_sql = """
-                select date({column}) from (
+                select {extract} from (
                     select * from ({sql}) limit 100
-                ) where {column} glob "????-??-*"
-            """.format(column=escape_sqlite(column), sql=self.sql)
+                ) where {where}
+            """.format(
+                extract=dialect.date_extract_sql(self._escape(column)),
+                sql=self.sql,
+                where=dialect.date_facet_suggest_where(self._escape(column)),
+            )
             try:
                 results = await self.ds.execute(
                     self.database,
@@ -492,21 +560,8 @@ class DateFacet(Facet):
                 )
                 values = tuple(r[0] for r in results.rows)
                 if any(values):
-                    suggested_facets.append(
-                        {
-                            "name": column,
-                            "type": "date",
-                            "toggle_url": self.ds.absolute_url(
-                                self.request,
-                                self.ds.urls.path(
-                                    path_with_added_args(
-                                        self.request, {"_facet_date": column}
-                                    )
-                                ),
-                            ),
-                        }
-                    )
-            except (QueryInterrupted, sqlite3.OperationalError):
+                    _add()
+            except (QueryInterrupted, QueryError):
                 continue
         return suggested_facets
 
@@ -519,14 +574,21 @@ class DateFacet(Facet):
             config = source_and_config["config"]
             source = source_and_config["source"]
             column = config.get("column") or config["simple"]
+            # date_extract_sql must return NULL (not raise) on non-date values:
+            # DuckDB's date('') / date('garbage') hard-error, so a bare date()
+            # here would take out the whole facet on a dirty VARCHAR column.
+            # The dialect picks date() (SQLite) vs try_cast (DuckDB).
+            extract = self.ds.get_database(self.database).dialect.date_extract_sql(
+                self._escape(column)
+            )
             # TODO: does this query break if inner sql produces value or count columns?
             facet_sql = """
-                select date({col}) as value, count(*) as count from (
+                select {extract} as value, count(*) as count from (
                     {sql}
                 )
-                where date({col}) is not null
-                group by date({col}) order by count desc, value limit {limit}
-            """.format(col=escape_sqlite(column), sql=self.sql, limit=facet_size + 1)
+                where {extract} is not null
+                group by {extract} order by count desc, value limit {limit}
+            """.format(extract=extract, sql=self.sql, limit=facet_size + 1)
             try:
                 facet_rows_results = await self.ds.execute(
                     self.database,

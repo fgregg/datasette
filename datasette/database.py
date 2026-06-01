@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import janus
 import queue
-import sqlite_utils
 import sys
 import tempfile
 import threading
@@ -15,19 +14,10 @@ import uuid
 from .tracer import trace
 from .utils import (
     call_with_supported_arguments,
-    detect_fts,
-    detect_primary_keys,
-    detect_spatialite,
-    get_all_foreign_keys,
-    get_outbound_foreign_keys,
     md5_not_usedforsecurity,
-    sqlite_timelimit,
-    sqlite3,
-    table_columns,
-    table_column_details,
 )
-from .utils.sqlite import sqlite_version
 from .inspect import inspect_hash
+from .backends.sqlite import SqliteBackend
 
 connections = threading.local()
 
@@ -55,7 +45,10 @@ class Database:
         memory_name=None,
         mode=None,
         is_temp_disk=False,
+        backend=None,
     ):
+        self.backend = backend or SqliteBackend()
+        self._introspector = None
         self.name = None
         self._thread_local_id = f"x{self._thread_local_id_counter}"
         Database._thread_local_id_counter += 1
@@ -132,41 +125,20 @@ class Database:
         else:
             return "db"
 
-    def connect(self, write=False):
-        extra_kwargs = {}
-        if write:
-            extra_kwargs["isolation_level"] = "IMMEDIATE"
-        if self.memory_name:
-            uri = "file:{}?mode=memory&cache=shared".format(self.memory_name)
-            conn = sqlite3.connect(
-                uri, uri=True, check_same_thread=False, **extra_kwargs
-            )
-            if not write:
-                conn.execute("PRAGMA query_only=1")
-            return conn
-        if self.is_memory:
-            return sqlite3.connect(":memory:", uri=True)
+    @property
+    def introspector(self):
+        # Schema introspection is delegated to the backend's Introspector.
+        if self._introspector is None:
+            self._introspector = self.backend.introspector(self)
+        return self._introspector
 
-        # mode=ro or immutable=1?
-        if self.is_mutable:
-            qs = "?mode=ro"
-            if self.ds.nolock:
-                qs += "&nolock=1"
-        else:
-            qs = "?immutable=1"
-        assert not (write and not self.is_mutable)
-        if write:
-            qs = ""
-        if self.mode is not None:
-            qs = f"?mode={self.mode}"
-        conn = sqlite3.connect(
-            f"file:{self.path}{qs}", uri=True, check_same_thread=False, **extra_kwargs
-        )
-        self._all_file_connections.append(conn)
-        if self.is_temp_disk and not self._wal_enabled:
-            conn.execute("PRAGMA journal_mode=WAL")
-            self._wal_enabled = True
-        return conn
+    @property
+    def dialect(self):
+        # SQL-string generation is delegated to the backend's Dialect.
+        return self.backend.dialect
+
+    def connect(self, write=False):
+        return self.backend.connect(self, write=write)
 
     def close(self):
         """Release all resources held by this database.
@@ -314,7 +286,9 @@ class Database:
             # non-threaded mode
             if self._write_connection is None:
                 self._write_connection = self.connect(write=True)
-                self.ds._prepare_connection(self._write_connection, self.name)
+                self.backend.prepare_connection(
+                    self._write_connection, self.ds, self.name
+                )
             if transaction:
                 with self._write_connection:
                     result = fn(self._write_connection)
@@ -410,7 +384,7 @@ class Database:
         conn = None
         try:
             conn = self.connect(write=True)
-            self.ds._prepare_connection(conn, self.name)
+            self.backend.prepare_connection(conn, self.ds, self.name)
         except Exception as e:
             conn_exception = e
         while True:
@@ -459,7 +433,9 @@ class Database:
             # non-threaded mode
             if self._read_connection is None:
                 self._read_connection = self.connect()
-                self.ds._prepare_connection(self._read_connection, self.name)
+                self.backend.prepare_connection(
+                    self._read_connection, self.ds, self.name
+                )
             return fn(self._read_connection)
 
         # threaded mode
@@ -467,7 +443,7 @@ class Database:
             conn = getattr(connections, self._thread_local_id, None)
             if not conn:
                 conn = self.connect()
-                self.ds._prepare_connection(conn, self.name)
+                self.backend.prepare_connection(conn, self.ds, self.name)
                 setattr(connections, self._thread_local_id, conn)
             return fn(conn)
 
@@ -491,42 +467,21 @@ class Database:
         self._check_not_closed()
         page_size = page_size or self.ds.page_size
 
+        time_limit_ms = self.ds.sql_time_limit_ms
+        if custom_time_limit and custom_time_limit < time_limit_ms:
+            time_limit_ms = custom_time_limit
+
         def sql_operation_in_thread(conn):
-            time_limit_ms = self.ds.sql_time_limit_ms
-            if custom_time_limit and custom_time_limit < time_limit_ms:
-                time_limit_ms = custom_time_limit
-
-            with sqlite_timelimit(conn, time_limit_ms):
-                try:
-                    cursor = conn.cursor()
-                    cursor.execute(sql, params if params is not None else {})
-                    max_returned_rows = self.ds.max_returned_rows
-                    if max_returned_rows == page_size:
-                        max_returned_rows += 1
-                    if max_returned_rows and truncate:
-                        rows = cursor.fetchmany(max_returned_rows + 1)
-                        truncated = len(rows) > max_returned_rows
-                        rows = rows[:max_returned_rows]
-                    else:
-                        rows = cursor.fetchall()
-                        truncated = False
-                except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
-                    if e.args == ("interrupted",):
-                        raise QueryInterrupted(e, sql, params)
-                    if log_sql_errors:
-                        sys.stderr.write(
-                            "ERROR: conn={}, sql = {}, params = {}: {}\n".format(
-                                conn, repr(sql), params, e
-                            )
-                        )
-                        sys.stderr.flush()
-                    raise
-
-            if truncate:
-                return Results(rows, truncated, cursor.description)
-
-            else:
-                return Results(rows, False, cursor.description)
+            return self.backend.execute_query(
+                conn,
+                sql,
+                params,
+                time_limit_ms=time_limit_ms,
+                max_returned_rows=self.ds.max_returned_rows,
+                page_size=page_size,
+                truncate=truncate,
+                log_sql_errors=log_sql_errors,
+            )
 
         with trace("sql", database=self.name, sql=sql.strip(), params=params):
             results = await self.execute_fn(sql_operation_in_thread)
@@ -567,17 +522,19 @@ class Database:
         # Try to get counts for each table, $limit timeout for each count
         counts = {}
         for table in await self.table_names():
+            quoted = self.dialect.escape_identifier(table)
             try:
                 table_count = (
                     await self.execute(
-                        f"select count(*) from (select * from [{table}] limit {self.count_limit + 1})",
+                        f"select count(*) from (select * from {quoted} limit {self.count_limit + 1})",
                         custom_time_limit=limit,
                     )
                 ).rows[0][0]
                 counts[table] = table_count
-            # In some cases I saw "SQL Logic Error" here in addition to
-            # QueryInterrupted - so we catch that too:
-            except (QueryInterrupted, sqlite3.OperationalError, sqlite3.DatabaseError):
+            # Counts are best-effort; a timeout or any backend error -> None.
+            # (Includes QueryInterrupted and sqlite3.OperationalError/DatabaseError;
+            # other backends raise their own error types.)
+            except Exception:
                 counts[table] = None
         if not self.is_mutable:
             self._cached_table_counts = counts
@@ -590,47 +547,28 @@ class Database:
         return Path(self.path).stat().st_mtime_ns
 
     async def attached_databases(self):
-        # This used to be:
-        #   select seq, name, file from pragma_database_list() where seq > 0
-        # But SQLite prior to 3.16.0 doesn't support pragma functions
-        results = await self.execute("PRAGMA database_list;")
-        # {'seq': 0, 'name': 'main', 'file': ''}
-        return [
-            AttachedDatabase(*row)
-            for row in results.rows
-            # Filter out the SQLite internal "temp" database, refs #2557
-            if row["seq"] > 0 and row["name"] != "temp"
-        ]
+        return await self.introspector.attached_databases()
 
     async def table_exists(self, table):
-        results = await self.execute(
-            "select 1 from sqlite_master where type='table' and name=?", params=(table,)
-        )
-        return bool(results.rows)
+        return await self.introspector.table_exists(table)
 
     async def view_exists(self, table):
-        results = await self.execute(
-            "select 1 from sqlite_master where type='view' and name=?", params=(table,)
-        )
-        return bool(results.rows)
+        return await self.introspector.view_exists(table)
 
     async def table_names(self):
-        results = await self.execute(
-            "select name from sqlite_master where type='table' order by name"
-        )
-        return [r[0] for r in results.rows]
+        return await self.introspector.table_names()
 
     async def table_columns(self, table):
-        return await self.execute_fn(lambda conn: table_columns(conn, table))
+        return await self.introspector.table_columns(table)
 
     async def table_column_details(self, table):
-        return await self.execute_fn(lambda conn: table_column_details(conn, table))
+        return await self.introspector.table_column_details(table)
 
     async def primary_keys(self, table):
-        return await self.execute_fn(lambda conn: detect_primary_keys(conn, table))
+        return await self.introspector.primary_keys(table)
 
     async def fts_table(self, table):
-        return await self.execute_fn(lambda conn: detect_fts(conn, table))
+        return await self.introspector.fts_table(table)
 
     async def label_column_for_table(self, table):
         explicit_label_column = (await self.ds.table_config(self.name, table)).get(
@@ -639,22 +577,7 @@ class Database:
         if explicit_label_column:
             return explicit_label_column
 
-        def column_details(conn):
-            # Returns {column_name: (type, is_unique)}
-            db = sqlite_utils.Database(conn)
-            columns = db[table].columns_dict
-            indexes = db[table].indexes
-            details = {}
-            for name in columns:
-                is_unique = any(
-                    index
-                    for index in indexes
-                    if index.columns == [name] and index.unique
-                )
-                details[name] = (columns[name], is_unique)
-            return details
-
-        column_details = await self.execute_fn(column_details)
+        column_details = await self.introspector.column_details_with_uniqueness(table)
         # Is there just one unique column that's text?
         unique_text_columns = [
             name
@@ -681,150 +604,19 @@ class Database:
         return None
 
     async def foreign_keys_for_table(self, table):
-        return await self.execute_fn(
-            lambda conn: get_outbound_foreign_keys(conn, table)
-        )
+        return await self.introspector.foreign_keys_for_table(table)
 
     async def hidden_table_names(self):
-        hidden_tables = []
-        # Add any tables marked as hidden in config
-        db_config = self.ds.config.get("databases", {}).get(self.name, {})
-        if "tables" in db_config:
-            hidden_tables += [
-                t for t in db_config["tables"] if db_config["tables"][t].get("hidden")
-            ]
-
-        if sqlite_version()[1] >= 37:
-            hidden_tables += [x[0] for x in await self.execute("""
-                      with shadow_tables as (
-                        select name
-                        from pragma_table_list
-                        where [type] = 'shadow'
-                        order by name
-                      ),
-                      core_tables as (
-                        select name
-                        from sqlite_master
-                        WHERE  name in ('sqlite_stat1', 'sqlite_stat2', 'sqlite_stat3', 'sqlite_stat4')
-                          OR substr(name, 1, 1) == '_'
-                      ),
-                      combined as (
-                        select name from shadow_tables
-                        union all
-                        select name from core_tables
-                      )
-                      select name from combined order by 1
-                    """)]
-        else:
-            hidden_tables += [x[0] for x in await self.execute("""
-                      WITH base AS (
-                        SELECT name
-                        FROM sqlite_master
-                        WHERE  name IN ('sqlite_stat1', 'sqlite_stat2', 'sqlite_stat3', 'sqlite_stat4')
-                          OR substr(name, 1, 1) == '_'
-                      ),
-                      fts_suffixes AS (
-                        SELECT column1 AS suffix
-                        FROM (VALUES ('_data'), ('_idx'), ('_docsize'), ('_content'), ('_config'))
-                      ),
-                      fts5_names AS (
-                        SELECT name
-                        FROM sqlite_master
-                        WHERE sql LIKE '%VIRTUAL TABLE%USING FTS%'
-                      ),
-                      fts5_shadow_tables AS (
-                        SELECT
-                          printf('%s%s', fts5_names.name, fts_suffixes.suffix) AS name
-                        FROM fts5_names
-                        JOIN fts_suffixes
-                      ),
-                      fts3_suffixes AS (
-                        SELECT column1 AS suffix
-                        FROM (VALUES ('_content'), ('_segdir'), ('_segments'), ('_stat'), ('_docsize'))
-                      ),
-                      fts3_names AS (
-                        SELECT name
-                        FROM sqlite_master
-                        WHERE sql LIKE '%VIRTUAL TABLE%USING FTS3%'
-                          OR sql LIKE '%VIRTUAL TABLE%USING FTS4%'
-                      ),
-                      fts3_shadow_tables AS (
-                        SELECT
-                          printf('%s%s', fts3_names.name, fts3_suffixes.suffix) AS name
-                        FROM fts3_names
-                        JOIN fts3_suffixes
-                      ),
-                      final AS (
-                        SELECT name FROM base
-                        UNION ALL
-                        SELECT name FROM fts5_shadow_tables
-                        UNION ALL
-                        SELECT name FROM fts3_shadow_tables
-                      )
-                      SELECT name FROM final ORDER BY 1
-                    """)]
-        # Also hide any FTS tables that have a content= argument
-        hidden_tables += [x[0] for x in await self.execute("""
-                  SELECT name
-                  FROM sqlite_master
-                  WHERE sql LIKE '%VIRTUAL TABLE%'
-                    AND sql LIKE '%USING FTS%'
-                    AND sql LIKE '%content=%'
-                """)]
-
-        has_spatialite = await self.execute_fn(detect_spatialite)
-        if has_spatialite:
-            # Also hide Spatialite internal tables
-            hidden_tables += [
-                "ElementaryGeometries",
-                "SpatialIndex",
-                "geometry_columns",
-                "spatial_ref_sys",
-                "spatialite_history",
-                "sql_statements_log",
-                "sqlite_sequence",
-                "views_geometry_columns",
-                "virts_geometry_columns",
-                "data_licenses",
-                "KNN",
-                "KNN2",
-            ] + [
-                r[0] for r in (await self.execute("""
-                        select name from sqlite_master
-                        where name like "idx_%"
-                        and type = "table"
-                    """)).rows
-            ]
-
-        return hidden_tables
+        return await self.introspector.hidden_table_names()
 
     async def view_names(self):
-        results = await self.execute("select name from sqlite_master where type='view'")
-        return [r[0] for r in results.rows]
+        return await self.introspector.view_names()
 
     async def get_all_foreign_keys(self):
-        return await self.execute_fn(get_all_foreign_keys)
+        return await self.introspector.get_all_foreign_keys()
 
     async def get_table_definition(self, table, type_="table"):
-        table_definition_rows = list(
-            await self.execute(
-                "select sql from sqlite_master where name = :n and type=:t",
-                {"n": table, "t": type_},
-            )
-        )
-        if not table_definition_rows:
-            return None
-        bits = [table_definition_rows[0][0] + ";"]
-        # Add on any indexes
-        index_rows = list(
-            await self.execute(
-                "select sql from sqlite_master where tbl_name = :n and type='index' and sql is not null",
-                {"n": table},
-            )
-        )
-        for index_row in index_rows:
-            bits.append(index_row[0] + ";")
-        return "\n".join(bits)
+        return await self.introspector.get_table_definition(table, type_)
 
     async def get_view_definition(self, view):
         return await self.get_table_definition(view, "view")
@@ -910,6 +702,24 @@ class QueryInterrupted(Exception):
 
     def __str__(self):
         return "QueryInterrupted: {}".format(self.e)
+
+
+class QueryError(Exception):
+    """A query failed to execute (bad SQL, missing table, etc.).
+
+    Backend-agnostic: each backend's ``execute_query`` maps its native
+    operational/SQL errors to this so no engine-specific exception (e.g.
+    ``sqlite3.OperationalError``) escapes ``Database.execute``. ``str()`` yields
+    the underlying engine message.
+    """
+
+    def __init__(self, e, sql, params):
+        self.e = e
+        self.sql = sql
+        self.params = params
+
+    def __str__(self):
+        return str(self.e)
 
 
 class MultipleValues(Exception):

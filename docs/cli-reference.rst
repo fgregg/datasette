@@ -631,6 +631,13 @@ This performance optimization is used automatically by some of the ``datasette p
       operations against immutable database files.
 
     Options:
+      -c, --config FILENAME           Path to JSON/YAML Datasette configuration
+                                      file. Use to inspect databases mounted by a
+                                      backend plugin (e.g. datasette-duckdb) that
+                                      registers them via plugins.<plugin>.databases
+                                      — without -c, inspect only sees files passed
+                                      as arguments, which are opened with the
+                                      default SQLite backend.
       --inspect-file TEXT
       --load-extension PATH:ENTRYPOINT?
                                       Path to a SQLite extension to load, and

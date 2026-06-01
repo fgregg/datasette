@@ -6,6 +6,8 @@ from collections import OrderedDict, namedtuple, Counter
 import copy
 import dataclasses
 import base64
+import datetime
+import decimal
 import hashlib
 import inspect
 import json
@@ -193,29 +195,13 @@ def path_from_row_pks(row, pks, use_rowid, quote=True):
 
 
 def compound_keys_after_sql(pks, start_index=0):
-    # Implementation of keyset pagination
-    # See https://github.com/simonw/datasette/issues/190
-    # For pk1/pk2/pk3 returns:
-    #
-    # ([pk1] > :p0)
-    #   or
-    # ([pk1] = :p0 and [pk2] > :p1)
-    #   or
-    # ([pk1] = :p0 and [pk2] = :p1 and [pk3] > :p2)
-    or_clauses = []
-    pks_left = pks[:]
-    while pks_left:
-        and_clauses = []
-        last = pks_left[-1]
-        rest = pks_left[:-1]
-        and_clauses = [
-            f"{escape_sqlite(pk)} = :p{i + start_index}" for i, pk in enumerate(rest)
-        ]
-        and_clauses.append(f"{escape_sqlite(last)} > :p{len(rest) + start_index}")
-        or_clauses.append(f"({' and '.join(and_clauses)})")
-        pks_left.pop()
-    or_clauses.reverse()
-    return "({})".format("\n  or\n".join(or_clauses))
+    # Implementation of keyset pagination, see
+    # https://github.com/simonw/datasette/issues/190
+    # Backwards-compatible alias: the implementation now lives in
+    # Dialect.keyset_after_sql so it can be customised per backend.
+    from datasette.backends.sqlite import SqliteDialect
+
+    return SqliteDialect().keyset_after_sql(pks, start_index)
 
 
 class CustomJSONEncoder(json.JSONEncoder):
@@ -224,6 +210,12 @@ class CustomJSONEncoder(json.JSONEncoder):
             return tuple(obj)
         if isinstance(obj, sqlite3.Cursor):
             return list(obj)
+        # Temporal / decimal values, as returned natively by backends like
+        # DuckDB (sqlite3 returns these as strings, so SQLite never hit this).
+        if isinstance(obj, (datetime.date, datetime.datetime, datetime.time)):
+            return obj.isoformat()
+        if isinstance(obj, decimal.Decimal):
+            return float(obj)
         if isinstance(obj, bytes):
             # Does it encode to utf8?
             try:
@@ -1248,12 +1240,23 @@ def named_parameters(sql: str) -> List[str]:
 
     e.g. for ``select * from foo where id=:id`` this would return ``["id"]``
     """
-    sql = _single_line_comment_re.sub("", sql)
-    sql = _multi_line_comment_re.sub("", sql)
-    sql = _single_quote_re.sub("", sql)
-    sql = _double_quote_re.sub("", sql)
-    # Extract parameters from what is left
-    return _named_param_re.findall(sql)
+    # Delegate to the lexical scanner in datasette.backends, which correctly
+    # skips ``::`` PostgreSQL-style casts and colons inside strings/comments.
+    # The regex-based approach this replaced treated ``col::date`` as a
+    # parameter named "date", which is surprising on DuckDB (where ``::``
+    # casts are idiomatic) and incidentally wrong on SQLite too. The query
+    # view rendered an empty form input for the phantom parameter.
+    from datasette.backends import rewrite_named_parameters
+
+    _, names = rewrite_named_parameters(sql, lambda name: ":" + name)
+    # Preserve order of first appearance; dedupe.
+    seen = set()
+    out = []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
 
 
 async def derive_named_parameters(db: "Database", sql: str) -> List[str]:
