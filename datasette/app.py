@@ -1677,6 +1677,11 @@ class Datasette:
     async def expand_foreign_keys(self, actor, database, table, column, values):
         """Returns dict mapping (column, value) -> label"""
         labeled_fks = {}
+        if not values:
+            # Nothing to label (e.g. an empty result set). Returning early also
+            # avoids building `... in ()`, which is a syntax error on backends
+            # that don't accept an empty IN list (DuckDB; SQLite tolerates it).
+            return labeled_fks
         db = self.databases[database]
         foreign_keys = await db.foreign_keys_for_table(table)
         # Find the foreign_key for this column
