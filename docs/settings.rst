@@ -273,6 +273,19 @@ You can disable the limit entirely by settings this to 0:
 
     datasette mydatabase.db --setting max_csv_mb 0
 
+.. _setting_max_csv_stream_page_size:
+
+max_csv_stream_page_size
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The number of rows fetched per chunk when streaming a CSV export
+(``?_stream=on``) from a single cursor. Defaults to 10000. Larger chunks mean
+fewer round-trips but higher peak memory per chunk:
+
+::
+
+    datasette mydatabase.db --setting max_csv_stream_page_size 1000
+
 .. _setting_truncate_cells_html:
 
 truncate_cells_html
