@@ -188,10 +188,21 @@ def _read_schema(src):
     for t in tables:
         cols = cur.execute(f'PRAGMA table_info("{t}")').fetchall()
         pks = [c[1] for c in sorted(cols, key=lambda c: c[5]) if c[5]]
+        # Group foreign_key_list rows by FK id: a composite FK spans several rows
+        # (one per column). Each FK -> (from_cols, referenced_table, to_cols).
+        fk_groups = {}
+        for f in cur.execute(f'PRAGMA foreign_key_list("{t}")').fetchall():
+            if f[2] not in table_set:  # skip FKs to non-existent tables
+                continue
+            g = fk_groups.setdefault(f[0], {"ref": f[2], "cols": []})
+            g["cols"].append((f[1], f[3], f[4]))  # (seq, from, to)
         fks = [
-            (f[3], f[2], f[4])  # (from_column, referenced_table, to_column)
-            for f in cur.execute(f'PRAGMA foreign_key_list("{t}")').fetchall()
-            if f[2] in table_set  # skip FKs to non-existent tables
+            (
+                tuple(c[1] for c in sorted(g["cols"])),
+                g["ref"],
+                tuple(c[2] for c in sorted(g["cols"])),
+            )
+            for g in fk_groups.values()
         ]
         meta[t] = {
             "columns": [(c[1], _map_type(c[2])) for c in cols],
@@ -320,38 +331,54 @@ def _enforceable_fks(d, t, m, meta, dropped):
     """
     child_types = dict(m["columns"])
     keep = []
-    for frm, ref, to in m["fks"]:
+    for from_cols, ref, to_cols in m["fks"]:
         parent = meta.get(ref)
+        cols_label = ",".join(from_cols)
+        to_label = ",".join(to_cols)
         reason = None
         if parent is None:
             reason = "missing parent table"
-        elif child_types.get(frm) != dict(parent["columns"]).get(to):
-            reason = (
-                f"type mismatch ({child_types.get(frm)} vs "
-                f"{dict(parent['columns']).get(to)})"
-            )
-        elif parent["pks"] != [to]:
-            # enforceable only if the parent's PK is exactly this single column
-            # (composite or non-PK parents expose no usable unique key)
-            reason = f"{ref}.{to} is not a standalone PK"
+        elif set(to_cols) != set(parent["pks"]):
+            # enforceable only if the FK references exactly the parent's PK
+            # (DuckDB needs a unique key on the referenced columns; we only
+            # create PKs). Covers single, composite, and non-PK-parent cases.
+            reason = f"{ref}({to_label}) is not the parent PK"
         else:
-            # Orphan check in the TARGET type, matching how DuckDB will actually
-            # enforce the FK on the converted tables -- not raw VARCHAR. This
-            # avoids false orphans from TRY_CAST normalization (e.g. '' -> NULL,
-            # which is an allowed null FK; '01' vs '1' compare equal as BIGINT).
-            ty = child_types.get(frm)
-            cv = f'TRY_CAST(c."{frm}" AS {ty})'
-            orphan = d.execute(
-                f'SELECT 1 FROM s."{t}" c WHERE {cv} IS NOT NULL AND NOT EXISTS '
-                f'(SELECT 1 FROM s."{ref}" p WHERE TRY_CAST(p."{to}" AS {ty}) = {cv}) '
-                f"LIMIT 1"
-            ).fetchone()
-            if orphan:
-                reason = f"orphan rows reference {ref}.{to}"
+            ptypes = dict(parent["columns"])
+            mismatch = [
+                (fc, tc)
+                for fc, tc in zip(from_cols, to_cols)
+                if child_types.get(fc) != ptypes.get(tc)
+            ]
+            if mismatch:
+                reason = "type mismatch " + ", ".join(
+                    f"{fc}:{child_types.get(fc)} vs {tc}:{ptypes.get(tc)}"
+                    for fc, tc in mismatch
+                )
+            else:
+                # Orphan check in the TARGET type(s), matching how DuckDB will
+                # enforce on the converted tables -- not raw VARCHAR. Avoids false
+                # orphans from TRY_CAST normalization ('' -> NULL = allowed null
+                # FK; '01' vs '1' equal as BIGINT). Composite FK -> tuple match.
+                not_null = " AND ".join(
+                    f'TRY_CAST(c."{fc}" AS {child_types[fc]}) IS NOT NULL'
+                    for fc in from_cols
+                )
+                joined = " AND ".join(
+                    f'TRY_CAST(p."{tc}" AS {child_types[fc]}) '
+                    f'= TRY_CAST(c."{fc}" AS {child_types[fc]})'
+                    for fc, tc in zip(from_cols, to_cols)
+                )
+                orphan = d.execute(
+                    f'SELECT 1 FROM s."{t}" c WHERE {not_null} AND NOT EXISTS '
+                    f'(SELECT 1 FROM s."{ref}" p WHERE {joined}) LIMIT 1'
+                ).fetchone()
+                if orphan:
+                    reason = f"orphan rows reference {ref}({to_label})"
         if reason:
-            dropped.append((t, f'FK "{frm}" -> {ref}."{to}": {reason}'))
+            dropped.append((t, f"FK ({cols_label}) -> {ref}({to_label}): {reason}"))
         else:
-            keep.append((frm, ref, to))
+            keep.append((from_cols, ref, to_cols))
     return keep
 
 
@@ -411,8 +438,10 @@ def convert_sqlite_to_duckdb(src, dst, infer_types=True):
                     defs.append(
                         "PRIMARY KEY ({})".format(", ".join(f'"{p}"' for p in m["pks"]))
                     )
-                for frm, ref, to in fks:
-                    defs.append(f'FOREIGN KEY ("{frm}") REFERENCES "{ref}"("{to}")')
+                for from_cols, ref, to_cols in fks:
+                    fc = ", ".join(f'"{c}"' for c in from_cols)
+                    tc = ", ".join(f'"{c}"' for c in to_cols)
+                    defs.append(f'FOREIGN KEY ({fc}) REFERENCES "{ref}"({tc})')
                 d.execute(f'DROP TABLE IF EXISTS "{t}"')
                 d.execute(f'CREATE TABLE "{t}" ({", ".join(defs)})')
 
