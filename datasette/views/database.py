@@ -649,11 +649,13 @@ class QueryView(View):
                 # arbitrary query is no longer capped at max_returned_rows
                 # (the long-standing #526 limitation).
                 results = await db.execute(sql, params, truncate=True)
+                # Stash the streaming query on the request for stream_csv (same
+                # mechanism as the table view); read back via request, not data.
+                request._stream_sql = sql
+                request._stream_params = params
                 data = {
                     "rows": results.rows,
                     "columns": results.columns,
-                    "stream_sql": sql,
-                    "stream_params": params,
                 }
                 return data, None, None
 

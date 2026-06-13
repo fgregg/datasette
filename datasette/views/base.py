@@ -505,7 +505,8 @@ async def stream_csv(datasette, fetch_data, request, database):
         # labelled columns (which needs the per-page display machinery). This
         # path deliberately does NOT apply the max_csv_mb cap: a "download all
         # rows" export should stream to completion, not be silently truncated.
-        if stream and data.get("stream_sql") and not expanded_columns:
+        stream_sql = getattr(request, "_stream_sql", None)
+        if stream and stream_sql and not expanded_columns:
             sink = EscapeHtmlWriter(r) if trace else r
             writer = csv.writer(sink)
             if trace:
@@ -517,8 +518,8 @@ async def stream_csv(datasette, fetch_data, request, database):
                 pks = data.get("primary_keys") or []
                 header_written = False
                 async for columns, rows in db.execute_stream(
-                    data["stream_sql"],
-                    data.get("stream_params"),
+                    stream_sql,
+                    getattr(request, "_stream_params", None),
                     chunk_size=chunk_size,
                 ):
                     if not header_written:

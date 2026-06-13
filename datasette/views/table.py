@@ -1970,9 +1970,12 @@ async def table_view_data(
     data = {
         "ok": True,
         "next": next_value and str(next_value) or None,
-        "stream_sql": stream_sql,
-        "stream_params": params,
     }
+    # Hand the unbounded streaming query to stream_csv (server-side cursor) via
+    # the request rather than the serialized `data` dict, so it stays out of the
+    # JSON table response. stream_csv runs in this same request and reads it back.
+    request._stream_sql = stream_sql
+    request._stream_params = params
     data.update(
         {
             key.replace("extra_", ""): value
