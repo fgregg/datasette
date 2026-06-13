@@ -335,11 +335,16 @@ def _enforceable_fks(d, t, m, meta, dropped):
             # (composite or non-PK parents expose no usable unique key)
             reason = f"{ref}.{to} is not a standalone PK"
         else:
-            # orphan check against the source (all-VARCHAR, matching SQLite's
-            # stored-value comparison); a non-NULL child with no parent fails.
+            # Orphan check in the TARGET type, matching how DuckDB will actually
+            # enforce the FK on the converted tables -- not raw VARCHAR. This
+            # avoids false orphans from TRY_CAST normalization (e.g. '' -> NULL,
+            # which is an allowed null FK; '01' vs '1' compare equal as BIGINT).
+            ty = child_types.get(frm)
+            cv = f'TRY_CAST(c."{frm}" AS {ty})'
             orphan = d.execute(
-                f'SELECT 1 FROM s."{t}" c WHERE c."{frm}" IS NOT NULL AND NOT EXISTS '
-                f'(SELECT 1 FROM s."{ref}" p WHERE p."{to}" = c."{frm}") LIMIT 1'
+                f'SELECT 1 FROM s."{t}" c WHERE {cv} IS NOT NULL AND NOT EXISTS '
+                f'(SELECT 1 FROM s."{ref}" p WHERE TRY_CAST(p."{to}" AS {ty}) = {cv}) '
+                f"LIMIT 1"
             ).fetchone()
             if orphan:
                 reason = f"orphan rows reference {ref}.{to}"
