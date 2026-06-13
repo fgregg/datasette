@@ -112,3 +112,33 @@ def test_facet_suggestion_on_keyed_table_does_not_500(tmp_path):
     plain, filtered = asyncio.run(fetch())
     assert plain.status_code == 200
     assert filtered.status_code == 200
+
+
+def test_database_schema_page_does_not_500(tmp_path):
+    # /<db>/-/schema ran a hardcoded `... from sqlite_master` query, which
+    # DuckDB can't parse -> every schema page 500'd. It now composes from the
+    # introspector's table/view definitions. Regression for /<db>/-/schema.
+    src = tmp_path / "source.db"
+    dst = tmp_path / "out.duckdb"
+    con = sqlite3.connect(str(src))
+    con.executescript("""
+        create table widget (id integer primary key, name text);
+        create view widget_names as select name from widget;
+        insert into widget (id, name) values (1, 'a'), (2, 'b');
+        """)
+    con.commit()
+    con.close()
+    convert_sqlite_to_duckdb(str(src), str(dst))
+
+    ds = Datasette(
+        config={"plugins": {"datasette-duckdb": {"databases": {"d": str(dst)}}}}
+    )
+
+    async def fetch():
+        await ds.invoke_startup()
+        return await ds.client.get("/d/-/schema.json")
+
+    response = asyncio.run(fetch())
+    assert response.status_code == 200
+    schema = response.json()["schema"]
+    assert "widget" in schema  # composed CREATE statements present
