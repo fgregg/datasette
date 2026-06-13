@@ -16,9 +16,10 @@ tighter type: VARCHAR -> UUID / DATE / TIMESTAMP / BIGINT, and DOUBLE -> REAL
 (see that function and #9 for the precedence and the profiling behind it).
 
 DuckDB enforces foreign keys at insert and has no ``ALTER ... ADD FOREIGN KEY``,
-so tables are created in dependency order with inline FKs. Foreign keys that
-reference a missing table, or whose data has orphans, are dropped for that table
-(the data is still loaded) and reported.
+so tables are created in dependency order with inline FKs. Each FK DuckDB can't
+enforce -- referenced table/column isn't the parent's PK, a column-type mismatch,
+or orphan child rows -- is dropped INDIVIDUALLY (the others on the table survive;
+the data is still loaded) and reported. See ``_enforceable_fks``.
 
 Source FTS virtual tables (``sqlite-utils enable-fts``) are mirrored into
 equivalent DuckDB FTS indexes (``_read_fts`` / ``_create_fts_indexes``), so a
@@ -308,6 +309,47 @@ def _topo_order(tables, meta):
     return order
 
 
+def _enforceable_fks(d, t, m, meta, dropped):
+    """Subset of ``m['fks']`` DuckDB can enforce inline; the rest are dropped
+    INDIVIDUALLY (appended to ``dropped`` with a reason) rather than all-or-
+    nothing. DuckDB requires: the FK column's type matches the referenced
+    column, the referenced column is exactly the parent's PK (we only create
+    PKs, not other UNIQUE constraints), and no orphan child rows. SQLite enforces
+    none of this, so its schemas carry FKs DuckDB rejects -- but a single bad one
+    must not strip a table's good ones.
+    """
+    child_types = dict(m["columns"])
+    keep = []
+    for frm, ref, to in m["fks"]:
+        parent = meta.get(ref)
+        reason = None
+        if parent is None:
+            reason = "missing parent table"
+        elif child_types.get(frm) != dict(parent["columns"]).get(to):
+            reason = (
+                f"type mismatch ({child_types.get(frm)} vs "
+                f"{dict(parent['columns']).get(to)})"
+            )
+        elif parent["pks"] != [to]:
+            # enforceable only if the parent's PK is exactly this single column
+            # (composite or non-PK parents expose no usable unique key)
+            reason = f"{ref}.{to} is not a standalone PK"
+        else:
+            # orphan check against the source (all-VARCHAR, matching SQLite's
+            # stored-value comparison); a non-NULL child with no parent fails.
+            orphan = d.execute(
+                f'SELECT 1 FROM s."{t}" c WHERE c."{frm}" IS NOT NULL AND NOT EXISTS '
+                f'(SELECT 1 FROM s."{ref}" p WHERE p."{to}" = c."{frm}") LIMIT 1'
+            ).fetchone()
+            if orphan:
+                reason = f"orphan rows reference {ref}.{to}"
+        if reason:
+            dropped.append((t, f'FK "{frm}" -> {ref}."{to}": {reason}'))
+        else:
+            keep.append((frm, ref, to))
+    return keep
+
+
 def convert_sqlite_to_duckdb(src, dst, infer_types=True):
     """Convert SQLite db at ``src`` to a DuckDB file at ``dst`` (overwritten).
 
@@ -354,27 +396,36 @@ def convert_sqlite_to_duckdb(src, dst, infer_types=True):
                 for n, ty in m["columns"]
             )
 
-            def create(with_fks):
+            # Only keep FKs DuckDB can actually enforce; drop the rest INDIVIDUALLY
+            # (not all-or-nothing) so one bad FK doesn't strip a table's good ones.
+            keep_fks = _enforceable_fks(d, t, m, meta, dropped)
+
+            def create(fks):
                 defs = [f'"{n}" {ty}' for n, ty in m["columns"]]
                 if m["pks"]:
                     defs.append(
                         "PRIMARY KEY ({})".format(", ".join(f'"{p}"' for p in m["pks"]))
                     )
-                if with_fks:
-                    for frm, ref, to in m["fks"]:
-                        defs.append(f'FOREIGN KEY ("{frm}") REFERENCES "{ref}"("{to}")')
+                for frm, ref, to in fks:
+                    defs.append(f'FOREIGN KEY ("{frm}") REFERENCES "{ref}"("{to}")')
                 d.execute(f'DROP TABLE IF EXISTS "{t}"')
                 d.execute(f'CREATE TABLE "{t}" ({", ".join(defs)})')
 
             try:
-                create(with_fks=True)
+                create(keep_fks)
                 d.execute(f'INSERT INTO "{t}" SELECT {select} FROM s."{t}"')
             except duckdb.Error as e:
-                # Orphan FK (or other constraint) -> keep the data, drop the FKs
-                create(with_fks=False)
+                # Anything the pre-checks missed -> keep the data, drop FKs.
+                create([])
                 d.execute(f'INSERT INTO "{t}" SELECT {select} FROM s."{t}"')
-                if m["fks"]:
-                    dropped.append((t, str(e).splitlines()[0]))
+                if keep_fks:
+                    dropped.append(
+                        (
+                            t,
+                            f"all FKs dropped (create/insert failed): "
+                            f"{str(e).splitlines()[0]}",
+                        )
+                    )
         # Tables (and their rowids) are populated now, so the FTS indexes can be
         # built against them.
         fts_created = _create_fts_indexes(d, fts)
