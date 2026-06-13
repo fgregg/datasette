@@ -165,6 +165,21 @@ async def test_custom_sql_csv(ds_client):
 
 
 @pytest.mark.asyncio
+async def test_custom_sql_csv_stream_returns_all_rows(ds_client):
+    # Streaming a custom SQL query used to stop at max_returned_rows because the
+    # query path had no keyset pagination (#526). It now streams the full result
+    # via Database.execute_stream, so every row comes back.
+    response = await ds_client.get(
+        "/fixtures/-/query.csv?sql=select+pk1,+pk2,+pk3+from+compound_three_primary_keys&_stream=on"
+    )
+    assert response.status_code == 200
+    lines = [line for line in response.content.split(b"\r\n") if line]
+    # header + 1001 data rows (well above the 1000 max_returned_rows cap)
+    assert len(lines) == 1002
+    assert lines[0] == b"pk1,pk2,pk3"
+
+
+@pytest.mark.asyncio
 async def test_table_csv_download(ds_client):
     response = await ds_client.get("/fixtures/simple_primary_key.csv?_dl=1")
     assert response.status_code == 200

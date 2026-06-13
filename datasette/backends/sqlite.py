@@ -204,6 +204,31 @@ class SqliteBackend(Backend):
         else:
             return Results(rows, False, cursor.description)
 
+    def stream_query(self, conn, sql, params, *, chunk_size, time_limit_ms):
+        from ..database import QueryInterrupted, QueryError
+
+        cursor = conn.cursor()
+
+        def guarded(fn):
+            # Bound the engine's compute for this one step. sqlite3 executes
+            # lazily, so both .execute() (query setup) and each .fetchmany()
+            # (which pulls the next chunk) are run under their own deadline.
+            with sqlite_timelimit(conn, time_limit_ms):
+                try:
+                    return fn()
+                except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
+                    if e.args == ("interrupted",):
+                        raise QueryInterrupted(e, sql, params)
+                    raise QueryError(e, sql, params)
+
+        guarded(lambda: cursor.execute(sql, params if params is not None else {}))
+        columns = [d[0] for d in (cursor.description or [])]
+        while True:
+            rows = guarded(lambda: cursor.fetchmany(chunk_size))
+            if not rows:
+                break
+            yield columns, rows
+
     def introspector(self, db):
         return SqliteIntrospector(db)
 

@@ -48,15 +48,18 @@ The following options can be used to customize the CSVs returned by Datasette.
 Streaming all records
 ---------------------
 
-The *stream all rows* option is designed to be as efficient as possible -
-under the hood it takes advantage of Python 3 asyncio capabilities and
-Datasette's efficient :ref:`pagination <pagination>` to stream back the full
-CSV file.
+The *stream all rows* option streams the full result set from a single
+server-side cursor over a dedicated connection, fetching rows in chunks rather
+than paginating through the table. This works for tables, views and arbitrary
+SQL queries alike, and is not capped at :ref:`setting_max_returned_rows`.
 
-Since databases can get pretty large, by default this option is capped at 100MB -
-if a table returns more than 100MB of data the last line of the CSV will be a
-truncation error message.
+The number of rows fetched per chunk is controlled by the
+:ref:`setting_max_csv_stream_page_size` setting (default 10000). Larger chunks
+mean fewer round-trips at the cost of higher peak memory per chunk.
 
-You can increase or remove this limit using the :ref:`setting_max_csv_mb` config
-setting. You can also disable the CSV export feature entirely using
-:ref:`setting_allow_csv_stream`.
+Streaming a query that hangs in the database engine (for example a blocking
+sort before the first row) is bounded per chunk by :ref:`setting_sql_time_limit_ms`.
+A download that is abandoned by the client releases its connection immediately.
+The :ref:`setting_max_csv_mb` cap does **not** apply to streamed exports — a
+stream is intended to return every matching row. You can disable the CSV export
+feature entirely using :ref:`setting_allow_csv_stream`.

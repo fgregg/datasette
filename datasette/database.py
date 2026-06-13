@@ -1,6 +1,7 @@
 import asyncio
 import atexit
 from collections import namedtuple
+import concurrent.futures
 import inspect
 import os
 from pathlib import Path
@@ -486,6 +487,73 @@ class Database:
         with trace("sql", database=self.name, sql=sql.strip(), params=params):
             results = await self.execute_fn(sql_operation_in_thread)
         return results
+
+    async def execute_stream(self, sql, params=None, *, chunk_size):
+        """Stream a read query's rows in bounded memory.
+
+        Async generator yielding ``(columns, rows)`` batches. Unlike
+        :meth:`execute` — which materialises a capped ``Results`` — this runs
+        the query once against a **dedicated** connection and pulls
+        ``chunk_size`` rows at a time via the backend's ``stream_query``, so a
+        very large export (CSV ``?_stream=on``) never holds the whole result in
+        memory.
+
+        The dedicated connection — and the single worker thread that owns its
+        cursor — are created here and closed in the ``finally``. That cleanup
+        also runs when the consumer stops early: if the HTTP client disconnects
+        mid-download the generator is closed, ``GeneratorExit`` unwinds through
+        the ``yield``, and the connection is released immediately rather than
+        held for a dead request.
+        """
+        self._check_not_closed()
+        time_limit_ms = self.ds.sql_time_limit_ms
+        loop = asyncio.get_event_loop()
+        # One dedicated worker thread: an engine cursor is thread-affine, so
+        # every step (open, fetch, close) must run on the same thread. A private
+        # executor also means a long download never ties up a worker from the
+        # shared read pool that serves interactive queries.
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="csv-stream-{}".format(self.name)
+        )
+        state = {"conn": None}
+
+        def _open():
+            conn = self.connect()
+            self.backend.prepare_connection(conn, self.ds, self.name)
+            state["conn"] = conn
+            return self.backend.stream_query(
+                conn, sql, params, chunk_size=chunk_size, time_limit_ms=time_limit_ms
+            )
+
+        def _close(gen):
+            try:
+                if gen is not None:
+                    gen.close()
+            finally:
+                conn = state["conn"]
+                if conn is not None:
+                    conn.close()
+                    # Drop our reference so a closed connection from each
+                    # download doesn't accumulate (some backends register file
+                    # connections here for bulk close()).
+                    try:
+                        self._all_file_connections.remove(conn)
+                    except ValueError:
+                        pass
+
+        gen = None
+        try:
+            gen = await loop.run_in_executor(executor, _open)
+            while True:
+                batch = await loop.run_in_executor(executor, next, gen, None)
+                if batch is None:
+                    break
+                yield batch
+        finally:
+            try:
+                await loop.run_in_executor(executor, _close, gen)
+            finally:
+                executor.shutdown(wait=False)
 
     @property
     def hash(self):
