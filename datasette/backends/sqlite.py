@@ -313,6 +313,17 @@ class SqliteIntrospector(Introspector):
             bits.append(index_row[0] + ";")
         return "\n".join(bits)
 
+    async def database_schema(self):
+        # Preserve the exact historical output (single sqlite_master dump) rather
+        # than the base class's per-table composition, so existing /-/schema
+        # output and tests are unchanged.
+        result = await self.db.execute(
+            "select group_concat(sql, ';' || CHAR(10)) as schema "
+            "from sqlite_master where sql is not null"
+        )
+        row = result.first()
+        return row["schema"] if row and row["schema"] else ""
+
     async def hidden_table_names(self):
         hidden_tables = []
         # Add any tables marked as hidden in config

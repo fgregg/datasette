@@ -618,6 +618,9 @@ class Database:
     async def get_table_definition(self, table, type_="table"):
         return await self.introspector.get_table_definition(table, type_)
 
+    async def database_schema(self):
+        return await self.introspector.database_schema()
+
     async def get_view_definition(self, view):
         return await self.get_table_definition(view, "view")
 
