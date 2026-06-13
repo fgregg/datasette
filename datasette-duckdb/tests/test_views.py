@@ -95,3 +95,102 @@ def test_unenforceable_fk_still_navigable_via_sidecar(tmp_path):
         {"column": "region_id", "other_table": "region", "other_column": "id"}
     ]
     assert status == 200
+
+
+def test_glob_filter_offered_and_works(tmp_path):
+    # DuckDB supports the GLOB operator, so the backend advertises supports_glob
+    # and the __glob table filter must work (case-sensitive, * wildcard).
+    src = tmp_path / "source.db"
+    dst = tmp_path / "out.duckdb"
+    con = sqlite3.connect(str(src))
+    con.executescript("""
+        create table org (id integer primary key, name text);
+        insert into org (id, name) values
+            (1,'Alpha'), (2,'Apex'), (3,'Beacon'), (4,'apex lower');
+        """)
+    con.commit()
+    con.close()
+    convert_sqlite_to_duckdb(str(src), str(dst))
+
+    ds = Datasette(
+        config={"plugins": {"datasette-duckdb": {"databases": {"d": str(dst)}}}}
+    )
+
+    async def fetch():
+        await ds.invoke_startup()
+        return await ds.client.get("/d/org.json?name__glob=A*&_shape=array")
+
+    response = asyncio.run(fetch())
+    assert response.status_code == 200
+    names = sorted(r["name"] for r in response.json())
+    # case-sensitive: 'Alpha' and 'Apex' match 'A*', 'apex lower' does not
+    assert names == ["Alpha", "Apex"]
+
+
+def test_facet_suggestion_on_keyed_table_does_not_500(tmp_path):
+    # Facet suggestion ran `select <col> as value ... where value is not null
+    # group by value`, referencing the SELECT alias. SQLite resolves the alias;
+    # DuckDB rejects it for the primary-key column with "column <pk> must appear
+    # in the GROUP BY clause". Regression for the 500 browsing /opdr/ar_assets_fixed
+    # (a table with an integer pk) once faceting is enabled.
+    src = tmp_path / "source.db"
+    dst = tmp_path / "out.duckdb"
+    con = sqlite3.connect(str(src))
+    con.executescript("""
+        create table assets (
+            oid integer primary key,
+            asset_type text
+        );
+        insert into assets (oid, asset_type)
+            values (1, 'a'), (2, 'a'), (3, 'b'), (4, 'b'), (5, 'c');
+        """)
+    con.commit()
+    con.close()
+    convert_sqlite_to_duckdb(str(src), str(dst))
+
+    ds = Datasette(
+        config={"plugins": {"datasette-duckdb": {"databases": {"d": str(dst)}}}}
+    )
+
+    async def fetch():
+        await ds.invoke_startup()
+        # The HTML table view runs facet suggestion over every column, incl. the
+        # pk; previously this 500'd. ?asset_type=a also exercises the filtered view.
+        return [
+            await ds.client.get("/d/assets"),
+            await ds.client.get("/d/assets?asset_type=a"),
+        ]
+
+    plain, filtered = asyncio.run(fetch())
+    assert plain.status_code == 200
+    assert filtered.status_code == 200
+
+
+def test_database_schema_page_does_not_500(tmp_path):
+    # /<db>/-/schema ran a hardcoded `... from sqlite_master` query, which
+    # DuckDB can't parse -> every schema page 500'd. It now composes from the
+    # introspector's table/view definitions. Regression for /<db>/-/schema.
+    src = tmp_path / "source.db"
+    dst = tmp_path / "out.duckdb"
+    con = sqlite3.connect(str(src))
+    con.executescript("""
+        create table widget (id integer primary key, name text);
+        create view widget_names as select name from widget;
+        insert into widget (id, name) values (1, 'a'), (2, 'b');
+        """)
+    con.commit()
+    con.close()
+    convert_sqlite_to_duckdb(str(src), str(dst))
+
+    ds = Datasette(
+        config={"plugins": {"datasette-duckdb": {"databases": {"d": str(dst)}}}}
+    )
+
+    async def fetch():
+        await ds.invoke_startup()
+        return await ds.client.get("/d/-/schema.json")
+
+    response = asyncio.run(fetch())
+    assert response.status_code == 200
+    schema = response.json()["schema"]
+    assert "widget" in schema  # composed CREATE statements present

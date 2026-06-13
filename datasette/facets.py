@@ -182,8 +182,8 @@ class ColumnFacet(Facet):
             suggested_facet_sql = """
                 with limited as (select * from ({sql}) limit {suggest_consider})
                 select {column} as value, count(*) as n from limited
-                where value is not null
-                group by value
+                where {column} is not null
+                group by {column}
                 limit {limit}
             """.format(
                 column=self._escape(column),

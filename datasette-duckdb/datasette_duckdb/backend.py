@@ -141,7 +141,12 @@ class DuckDBBackend(Backend):
         supports_rowid=True,
         supports_fts=True,  # via the fts extension + match_bm25 (per-table index)
         supports_json=False,  # DuckDB has JSON, but not SQLite's json_each() shape
-        supports_glob=False,
+        # DuckDB has a native GLOB operator with the same semantics as SQLite:
+        # case-sensitive, * / ? / [..] wildcards. (Only divergence found vs SQLite
+        # is the ? wildcard against a leading invisible-unicode char, e.g. NBSP/ZWSP
+        # -- a fringe data artifact.) Enabling this offers the __glob filter in the
+        # table UI, matching the SQLite backend.
+        supports_glob=True,
         supports_load_extension=True,
         supports_attach=True,
         supports_write=False,  # read-only analytic browsing for now

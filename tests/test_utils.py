@@ -6,11 +6,13 @@ from datasette.app import Datasette
 from datasette import utils
 from datasette.utils.asgi import Request
 from datasette.utils.sqlite import sqlite3
+import datetime
 import json
 import os
 import pathlib
 import pytest
 import tempfile
+import uuid
 from unittest.mock import patch
 
 
@@ -126,7 +128,17 @@ def test_path_from_row_pks(row, pks, expected_path):
             """
         {"CategoryID": 1, "Description": "Soft drinks", "Picture": {"$base64": true, "encoded": "FRwCx60F/g=="}}
     """.strip(),
-        )
+        ),
+        # DuckDB UUID columns arrive as uuid.UUID (sqlite3 returns plain strings)
+        (
+            {"id": uuid.UUID("3a2b1c00-0000-4000-8000-000000000001")},
+            '{"id": "3a2b1c00-0000-4000-8000-000000000001"}',
+        ),
+        # DuckDB INTERVAL columns arrive as datetime.timedelta
+        (
+            {"span": datetime.timedelta(days=1, hours=2)},
+            '{"span": "1 day, 2:00:00"}',
+        ),
     ],
 )
 def test_custom_json_encoder(obj, expected):
