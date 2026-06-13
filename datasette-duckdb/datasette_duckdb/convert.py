@@ -463,6 +463,27 @@ def convert_sqlite_to_duckdb(src, dst, infer_types=True):
         # Tables (and their rowids) are populated now, so the FTS indexes can be
         # built against them.
         fts_created = _create_fts_indexes(d, fts)
+        # FK metadata sidecar: record EVERY single-column source FK (enforced or
+        # not) so Datasette can render related-rows / label-expansion for
+        # relationships DuckDB can't enforce -- e.g. an FK whose source data has
+        # orphans/incomplete parents (NLRB CHIPS/CATS archives). Enforcement is a
+        # data-integrity guarantee; navigation only needs the declared relationship.
+        # Read by DuckDBIntrospector; hidden from the table list there.
+        fk_rows = [
+            (t, fc[0], ref, tc[0])
+            for t in order
+            for fc, ref, tc in meta[t]["fks"]
+            if len(fc) == 1
+        ]
+        d.execute(
+            'CREATE TABLE "_datasette_foreign_keys" '
+            "(table_name VARCHAR, from_column VARCHAR, "
+            "other_table VARCHAR, other_column VARCHAR)"
+        )
+        if fk_rows:
+            d.executemany(
+                'INSERT INTO "_datasette_foreign_keys" VALUES (?, ?, ?, ?)', fk_rows
+            )
     finally:
         d.close()
     return dropped, promotions, fts_created
