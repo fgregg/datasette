@@ -349,6 +349,22 @@ class Introspector:
     async def get_table_definition(self, table, type_="table"):
         raise NotImplementedError
 
+    async def database_schema(self):
+        """Full schema for the database: the CREATE statements for every table
+        and view, concatenated. Composed from ``get_table_definition`` so it
+        works on any backend; ``SqliteIntrospector`` overrides it to preserve
+        its exact historical output."""
+        parts = []
+        for table in await self.table_names():
+            definition = await self.get_table_definition(table, "table")
+            if definition:
+                parts.append(definition)
+        for view in await self.view_names():
+            definition = await self.get_table_definition(view, "view")
+            if definition:
+                parts.append(definition)
+        return "\n".join(parts)
+
     async def attached_databases(self):
         raise NotImplementedError
 
