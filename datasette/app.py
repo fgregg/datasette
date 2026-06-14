@@ -238,6 +238,13 @@ SETTINGS = (
         "Maximum size allowed for CSV export in MB - set 0 to disable this limit",
     ),
     Setting(
+        "max_csv_stream_page_size",
+        10000,
+        "Rows fetched per chunk when streaming CSV (?_stream=on) from a single "
+        "cursor. Larger chunks mean fewer round-trips but higher peak memory per "
+        "chunk",
+    ),
+    Setting(
         "truncate_cells_html",
         2048,
         "Truncate cells longer than this in HTML table view - set 0 to disable",

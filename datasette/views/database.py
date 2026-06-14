@@ -643,8 +643,20 @@ class QueryView(View):
         if format_ == "csv":
 
             async def fetch_data_for_csv(request, _next=None):
+                # truncate=True bounds this to a first page, used only for the
+                # column names. The actual rows are streamed in full from
+                # stream_sql via Database.execute_stream, so CSV streaming of an
+                # arbitrary query is no longer capped at max_returned_rows
+                # (the long-standing #526 limitation).
                 results = await db.execute(sql, params, truncate=True)
-                data = {"rows": results.rows, "columns": results.columns}
+                # Stash the streaming query on the request for stream_csv (same
+                # mechanism as the table view); read back via request, not data.
+                request._stream_sql = sql
+                request._stream_params = params
+                data = {
+                    "rows": results.rows,
+                    "columns": results.columns,
+                }
                 return data, None, None
 
             return await stream_csv(datasette, fetch_data_for_csv, request, db.name)

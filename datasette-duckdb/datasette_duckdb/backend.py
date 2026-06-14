@@ -236,6 +236,44 @@ class DuckDBBackend(Backend):
         rows = [DuckDBRow(columns, index, r) for r in raw]
         return Results(rows, truncated, description)
 
+    def stream_query(self, conn, sql, params, *, chunk_size, time_limit_ms):
+        import duckdb
+        from datasette.database import QueryInterrupted, QueryError
+
+        duck_sql, params = self.dialect.adapt_parameters(sql, params)
+        cursor = conn.cursor()
+
+        def guarded(fn):
+            # DuckDB has no progress handler; cursor.interrupt() from a watchdog
+            # thread cancels the in-flight compute. Arm it around each step so a
+            # chunk that hangs in the engine (a blocking sort/join) is bounded,
+            # while idle time between chunks (a slow client) is not.
+            timer = None
+            if time_limit_ms and time_limit_ms > 0:
+                timer = threading.Timer(time_limit_ms / 1000.0, cursor.interrupt)
+                timer.start()
+            try:
+                return fn()
+            except duckdb.InterruptException as e:
+                raise QueryInterrupted(e, sql, params)
+            except duckdb.Error as e:
+                raise QueryError(e, sql, params)
+            finally:
+                if timer is not None:
+                    timer.cancel()
+
+        if params:
+            guarded(lambda: cursor.execute(duck_sql, params))
+        else:
+            guarded(lambda: cursor.execute(duck_sql))
+        columns = [d[0] for d in (cursor.description or [])]
+        index = {c: i for i, c in enumerate(columns)}
+        while True:
+            raw = guarded(lambda: cursor.fetchmany(chunk_size))
+            if not raw:
+                break
+            yield columns, [DuckDBRow(columns, index, r) for r in raw]
+
     def introspector(self, db):
         return DuckDBIntrospector(db)
 

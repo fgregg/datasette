@@ -463,8 +463,84 @@ async def stream_csv(datasette, fetch_data, request, database):
         )
         postamble = "</textarea></body></html>"
 
+    async def expand_blob_cells(row, columns, table, pks):
+        # Turn any bytes cells into blob-download URLs (table rows link to
+        # .../-/blob, arbitrary queries link to ?_blob_column=...).
+        new_row = []
+        for column, cell in zip(columns, row):
+            if isinstance(cell, bytes):
+                if table:
+                    cell = datasette.absolute_url(
+                        request,
+                        datasette.urls.row_blob(
+                            database,
+                            table,
+                            path_from_row_pks(row, pks, not pks),
+                            column,
+                        ),
+                    )
+                else:
+                    url = datasette.absolute_url(
+                        request,
+                        path_with_format(
+                            request=request,
+                            format="blob",
+                            extra_qs={
+                                "_blob_column": column,
+                                "_blob_hash": hashlib.sha256(cell).hexdigest(),
+                            },
+                            replace_format="csv",
+                        ),
+                    )
+                    cell = url.replace("&_nocount=1", "").replace("&_nofacet=1", "")
+            new_row.append(cell)
+        return new_row
+
     async def stream_fn(r):
         nonlocal data, trace
+        # Fast path: stream the whole result from a single query over a
+        # dedicated connection (Database.execute_stream), instead of walking
+        # keyset pages with a fresh re-scanning query per page. Used whenever
+        # the view hands us a streamable SQL statement and we are not expanding
+        # labelled columns (which needs the per-page display machinery). This
+        # path deliberately does NOT apply the max_csv_mb cap: a "download all
+        # rows" export should stream to completion, not be silently truncated.
+        stream_sql = getattr(request, "_stream_sql", None)
+        if stream and stream_sql and not expanded_columns:
+            sink = EscapeHtmlWriter(r) if trace else r
+            writer = csv.writer(sink)
+            if trace:
+                await r.write(preamble)
+            try:
+                db = datasette.get_database(database)
+                chunk_size = datasette.setting("max_csv_stream_page_size")
+                table = data.get("table")
+                pks = data.get("primary_keys") or []
+                header_written = False
+                async for columns, rows in db.execute_stream(
+                    stream_sql,
+                    getattr(request, "_stream_params", None),
+                    chunk_size=chunk_size,
+                ):
+                    if not header_written:
+                        if request.args.get("_header") != "off":
+                            await writer.writerow(headings)
+                        header_written = True
+                    for row in rows:
+                        if any(isinstance(cell, bytes) for cell in row):
+                            row = await expand_blob_cells(row, columns, table, pks)
+                        await writer.writerow(row)
+            except Exception as ex:
+                sys.stderr.write("Caught this error: {}\n".format(ex))
+                sys.stderr.flush()
+                await r.write(str(ex))
+                return
+            if trace:
+                await r.write(postamble)
+            return
+
+        # Fallback: keyset pagination via repeated fetch_data() calls. Used for
+        # non-streaming single-page CSV and for labelled (?_labels) streams.
         limited_writer = LimitedWriter(r, datasette.setting("max_csv_mb"))
         if trace:
             await limited_writer.write(preamble)
