@@ -274,6 +274,10 @@ These can be passed to ``datasette serve`` using ``datasette serve --setting nam
                                    (ignoring max_returned_rows) (default=True)
       max_csv_mb                   Maximum size allowed for CSV export in MB - set 0
                                    to disable this limit (default=100)
+      max_csv_stream_page_size     Rows fetched per chunk when streaming CSV
+                                   (?_stream=on) from a single cursor. Larger chunks
+                                   mean fewer round-trips but higher peak memory per
+                                   chunk (default=10000)
       truncate_cells_html          Truncate cells longer than this in HTML table
                                    view - set 0 to disable (default=2048)
       force_https_urls             Force URLs in API output to always use https://

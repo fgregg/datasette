@@ -236,6 +236,44 @@ class DuckDBBackend(Backend):
         rows = [DuckDBRow(columns, index, r) for r in raw]
         return Results(rows, truncated, description)
 
+    def stream_query(self, conn, sql, params, *, chunk_size, time_limit_ms):
+        import duckdb
+        from datasette.database import QueryInterrupted, QueryError
+
+        duck_sql, params = self.dialect.adapt_parameters(sql, params)
+        cursor = conn.cursor()
+
+        def guarded(fn):
+            # DuckDB has no progress handler; cursor.interrupt() from a watchdog
+            # thread cancels the in-flight compute. Arm it around each step so a
+            # chunk that hangs in the engine (a blocking sort/join) is bounded,
+            # while idle time between chunks (a slow client) is not.
+            timer = None
+            if time_limit_ms and time_limit_ms > 0:
+                timer = threading.Timer(time_limit_ms / 1000.0, cursor.interrupt)
+                timer.start()
+            try:
+                return fn()
+            except duckdb.InterruptException as e:
+                raise QueryInterrupted(e, sql, params)
+            except duckdb.Error as e:
+                raise QueryError(e, sql, params)
+            finally:
+                if timer is not None:
+                    timer.cancel()
+
+        if params:
+            guarded(lambda: cursor.execute(duck_sql, params))
+        else:
+            guarded(lambda: cursor.execute(duck_sql))
+        columns = [d[0] for d in (cursor.description or [])]
+        index = {c: i for i, c in enumerate(columns)}
+        while True:
+            raw = guarded(lambda: cursor.fetchmany(chunk_size))
+            if not raw:
+                break
+            yield columns, [DuckDBRow(columns, index, r) for r in raw]
+
     def introspector(self, db):
         return DuckDBIntrospector(db)
 
@@ -324,41 +362,51 @@ class DuckDBIntrospector(Introspector):
         details = await self.table_column_details(table)
         return {col.name: (_python_type(col.type), bool(col.is_pk)) for col in details}
 
-    async def foreign_keys_for_table(self, table):
-        # Outbound single-column foreign keys (Datasette ignores compound FKs)
-        results = await self.db.execute(
-            "select constraint_column_names, referenced_table, "
-            "referenced_column_names from duckdb_constraints() "
-            "where schema_name = 'main' and table_name = :t "
-            "and constraint_type = 'FOREIGN KEY'",
-            {"t": table},
-        )
-        fks = []
-        for cols, other_table, other_cols in results.rows:
-            if len(cols) == 1 and len(other_cols) == 1:
-                fks.append(
-                    {
-                        "column": cols[0],
-                        "other_table": other_table,
-                        "other_column": other_cols[0],
-                    }
-                )
-        return fks
+    async def _single_col_fks(self):
+        """Every single-column FK as (table, from_col, other_table, other_col).
 
-    async def get_all_foreign_keys(self):
-        names = await self.table_names()
-        result = {name: {"incoming": [], "outgoing": []} for name in names}
+        Prefers the ``_datasette_foreign_keys`` sidecar the converter writes,
+        which lists ALL source FKs -- including ones DuckDB can't enforce because
+        the source data has orphans / incomplete parents (e.g. the NLRB CHIPS and
+        CATS archives). Datasette's related-rows / label-expansion only needs the
+        declared relationship, not enforcement. Falls back to the enforced catalog
+        constraints for .duckdb files built before the sidecar existed.
+        (Datasette ignores compound FKs, so only single-column ones are returned.)
+        """
+        has_sidecar = await self.db.execute(
+            "select 1 from information_schema.tables where table_schema = 'main' "
+            "and table_name = '_datasette_foreign_keys'"
+        )
+        if has_sidecar.rows:
+            results = await self.db.execute(
+                "select table_name, from_column, other_table, other_column "
+                "from _datasette_foreign_keys"
+            )
+            return [tuple(r) for r in results.rows]
         results = await self.db.execute(
             "select table_name, constraint_column_names, referenced_table, "
             "referenced_column_names from duckdb_constraints() "
             "where schema_name = 'main' and constraint_type = 'FOREIGN KEY'"
         )
-        for table_name, cols, other_table, other_cols in results.rows:
-            if len(cols) != 1 or len(other_cols) != 1:
-                continue
+        return [
+            (tn, cols[0], other_table, other_cols[0])
+            for tn, cols, other_table, other_cols in results.rows
+            if len(cols) == 1 and len(other_cols) == 1
+        ]
+
+    async def foreign_keys_for_table(self, table):
+        return [
+            {"column": fc, "other_table": ot, "other_column": oc}
+            for tn, fc, ot, oc in await self._single_col_fks()
+            if tn == table
+        ]
+
+    async def get_all_foreign_keys(self):
+        names = await self.table_names()
+        result = {name: {"incoming": [], "outgoing": []} for name in names}
+        for table_name, from_, other_table, to_ in await self._single_col_fks():
             if table_name not in result or other_table not in result:
                 continue
-            from_, to_ = cols[0], other_cols[0]
             result[table_name]["outgoing"].append(
                 {"other_table": other_table, "column": from_, "other_column": to_}
             )
@@ -379,7 +427,8 @@ class DuckDBIntrospector(Introspector):
         return table if results.rows else None
 
     async def hidden_table_names(self):
-        return []
+        # the FK-metadata sidecar is plumbing, not user data
+        return ["_datasette_foreign_keys"]
 
     async def get_table_definition(self, table, type_="table"):
         # DuckDB has no sqlite_master, but duckdb_tables()/duckdb_views() each

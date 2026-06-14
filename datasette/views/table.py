@@ -1309,8 +1309,6 @@ async def table_view_data(
 
     extra_args = {}
     # Handle ?_size=500
-    # TODO: This was:
-    # page_size = _size or request.args.get("_size") or table_metadata.get("size")
     page_size = request.args.get("_size") or table_metadata.get("size")
     if page_size:
         if page_size == "max":
@@ -1347,6 +1345,18 @@ async def table_view_data(
         order_by=order_by,
         page_size=page_size + 1,
         offset=offset,
+    )
+
+    # Same projection / filters / order as the page query but unbounded, for
+    # CSV streaming (?_stream=on). Database.execute_stream pulls this in chunks
+    # over a dedicated connection instead of walking keyset pages.
+    stream_sql = (
+        "select {select_specified_columns} from {table_name} {where}{order_by}".format(
+            select_specified_columns=select_specified_columns,
+            table_name=escape(table_name),
+            where=where_clause,
+            order_by=order_by,
+        )
     )
 
     if request.args.get("_timelimit"):
@@ -1994,6 +2004,11 @@ async def table_view_data(
         "ok": True,
         "next": next_value and str(next_value) or None,
     }
+    # Hand the unbounded streaming query to stream_csv (server-side cursor) via
+    # the request rather than the serialized `data` dict, so it stays out of the
+    # JSON table response. stream_csv runs in this same request and reads it back.
+    request._stream_sql = stream_sql
+    request._stream_params = params
     data.update(
         {
             key.replace("extra_", ""): value
