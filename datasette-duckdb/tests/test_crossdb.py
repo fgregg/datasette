@@ -16,11 +16,21 @@ duckdb = pytest.importorskip("duckdb")
 from datasette.app import Datasette  # noqa: E402
 
 
-def _make_db(path, val):
+def _make_db(path, val, sidecar=False):
     con = duckdb.connect(str(path))
     try:
         con.execute("CREATE TABLE t (id INTEGER, val INTEGER)")
         con.execute("INSERT INTO t VALUES (1, ?)", [val])
+        if sidecar:
+            # The converter writes this FK-metadata sidecar (#18). Its presence
+            # in an *attached* catalog must not make the _memory host try to
+            # read an unqualified `_datasette_foreign_keys` from its own catalog
+            # (#29).
+            con.execute(
+                "CREATE TABLE _datasette_foreign_keys "
+                "(table_name VARCHAR, from_column VARCHAR, "
+                "other_table VARCHAR, other_column VARCHAR)"
+            )
     finally:
         con.close()
 
@@ -74,6 +84,36 @@ def test_each_attached_database_queryable(crossdb_datasette):
     b_rows = asyncio.run(ds.databases["_memory"].execute("SELECT val FROM b.t"))
     assert a_rows.first()["val"] == 10
     assert b_rows.first()["val"] == 32
+
+
+def test_memory_page_ok_with_attached_sidecars(tmp_path):
+    # Regression for #29: when the attached .duckdb files carry the FK sidecar
+    # (`_datasette_foreign_keys`), the _memory host must not resolve the
+    # unqualified sidecar against its own (sidecar-less) catalog -- which raised
+    # a Catalog Error and 500'd /_memory. The existence check is scoped to
+    # current_database(), so _memory falls through to reporting no foreign keys.
+    a = tmp_path / "a.duckdb"
+    b = tmp_path / "b.duckdb"
+    _make_db(a, 10, sidecar=True)
+    _make_db(b, 32, sidecar=True)
+    ds = Datasette(
+        crossdb=True,
+        config={
+            "plugins": {"datasette-duckdb": {"databases": {"a": str(a), "b": str(b)}}}
+        },
+    )
+
+    async def fetch():
+        await ds.invoke_startup()
+        # The introspection path that 500'd, plus the page itself.
+        fks = await ds.databases["_memory"].get_all_foreign_keys()
+        page = await ds.client.get("/_memory.json")
+        return fks, page
+
+    fks, page = asyncio.run(fetch())
+    assert page.status_code == 200
+    # _memory's own catalog has no enforceable/declared FK edges.
+    assert all(not v["incoming"] and not v["outgoing"] for v in fks.values())
 
 
 def test_no_crossdb_leaves_memory_sqlite(tmp_path):
