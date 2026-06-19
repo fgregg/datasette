@@ -373,8 +373,16 @@ class DuckDBIntrospector(Introspector):
         constraints for .duckdb files built before the sidecar existed.
         (Datasette ignores compound FKs, so only single-column ones are returned.)
         """
+        # Scope the existence check to the current catalog. On the cross-db
+        # _memory host the real databases are ATTACHed (each its own catalog
+        # with a `main` schema), so an unscoped check would match a sidecar in
+        # an attached catalog and then fail the unqualified read below against
+        # _memory's own catalog (Catalog Error -> the /_memory page 500s, #29).
+        # Restricting to current_database() lets _memory fall through to the
+        # constraints path (which returns nothing for it).
         has_sidecar = await self.db.execute(
-            "select 1 from information_schema.tables where table_schema = 'main' "
+            "select 1 from information_schema.tables "
+            "where table_catalog = current_database() and table_schema = 'main' "
             "and table_name = '_datasette_foreign_keys'"
         )
         if has_sidecar.rows:
