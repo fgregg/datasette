@@ -230,6 +230,16 @@ class DuckDBBackend(Backend):
         finally:
             if timer is not None:
                 timer.cancel()
+            # Close the cursor so DuckDB releases the prepared statement and its
+            # native result buffers immediately. `conn` is a long-lived pooled
+            # connection; DuckDB tracks child cursors on it, so an unclosed
+            # cursor per query accumulates native (C++) memory for the process
+            # lifetime — a slow RSS leak invisible to Python gc. `raw`/`columns`
+            # are already materialised above, so closing here is safe.
+            try:
+                cursor.close()
+            except Exception:
+                pass
         # Wrap tuples so downstream row["col"] and row[i] both work, sharing one
         # column->index map across the result rather than a dict per row.
         index = {c: i for i, c in enumerate(columns)}
@@ -262,17 +272,27 @@ class DuckDBBackend(Backend):
                 if timer is not None:
                     timer.cancel()
 
-        if params:
-            guarded(lambda: cursor.execute(duck_sql, params))
-        else:
-            guarded(lambda: cursor.execute(duck_sql))
-        columns = [d[0] for d in (cursor.description or [])]
-        index = {c: i for i, c in enumerate(columns)}
-        while True:
-            raw = guarded(lambda: cursor.fetchmany(chunk_size))
-            if not raw:
-                break
-            yield columns, [DuckDBRow(columns, index, r) for r in raw]
+        try:
+            if params:
+                guarded(lambda: cursor.execute(duck_sql, params))
+            else:
+                guarded(lambda: cursor.execute(duck_sql))
+            columns = [d[0] for d in (cursor.description or [])]
+            index = {c: i for i, c in enumerate(columns)}
+            while True:
+                raw = guarded(lambda: cursor.fetchmany(chunk_size))
+                if not raw:
+                    break
+                yield columns, [DuckDBRow(columns, index, r) for r in raw]
+        finally:
+            # Release the cursor's prepared statement + native buffers when the
+            # generator finishes or is closed early (client disconnect →
+            # GeneratorExit). execute_stream also closes the dedicated
+            # connection, but close the cursor too so nothing lingers.
+            try:
+                cursor.close()
+            except Exception:
+                pass
 
     def introspector(self, db):
         return DuckDBIntrospector(db)
