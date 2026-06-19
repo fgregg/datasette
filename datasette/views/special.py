@@ -989,13 +989,9 @@ class SchemaBaseView(BaseView):
     has_json_alternate = False
 
     async def get_database_schema(self, database_name):
-        """Get schema SQL for a database."""
+        """Get schema SQL for a database (backend-agnostic, via the introspector)."""
         db = self.ds.databases[database_name]
-        result = await db.execute(
-            "select group_concat(sql, ';' || CHAR(10)) as schema from sqlite_master where sql is not null"
-        )
-        row = result.first()
-        return row["schema"] if row and row["schema"] else ""
+        return await db.database_schema()
 
     def format_json_response(self, data):
         """Format data as JSON response with CORS headers if needed."""

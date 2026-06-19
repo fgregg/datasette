@@ -22,6 +22,7 @@ import time
 import types
 import secrets
 import shutil
+import uuid
 from typing import Iterable, List, Tuple
 import urllib
 import yaml
@@ -214,8 +215,14 @@ class CustomJSONEncoder(json.JSONEncoder):
         # DuckDB (sqlite3 returns these as strings, so SQLite never hit this).
         if isinstance(obj, (datetime.date, datetime.datetime, datetime.time)):
             return obj.isoformat()
+        if isinstance(obj, datetime.timedelta):
+            # DuckDB INTERVAL columns; no SQLite analogue.
+            return str(obj)
         if isinstance(obj, decimal.Decimal):
             return float(obj)
+        if isinstance(obj, uuid.UUID):
+            # DuckDB UUID columns; sqlite3 returns these as plain strings.
+            return str(obj)
         if isinstance(obj, bytes):
             # Does it encode to utf8?
             try:

@@ -288,6 +288,33 @@ class Backend:
         """
         raise NotImplementedError
 
+    def stream_query(self, conn, sql, params, *, chunk_size, time_limit_ms):
+        """Generator yielding ``(columns, rows)`` batches for a streaming read.
+
+        Unlike :meth:`execute_query` (which materialises a bounded result),
+        this opens a single cursor and pulls ``chunk_size`` rows at a time,
+        yielding each batch as ``(columns, rows)`` — ``columns`` is the list of
+        column names, repeated on every batch (cheap, and lets the consumer
+        write a CSV header before the first batch). The full result is never
+        materialised, so a million-row export streams in bounded memory.
+
+        Used by CSV streaming (``?_stream=on``). The caller (``Database.
+        execute_stream``) supplies a **dedicated** connection and is solely
+        responsible for closing it — the generator must not close ``conn``.
+
+        Contract: ``time_limit_ms`` (when truthy) bounds the engine's *compute
+        time for each chunk*, not the whole stream. A backend arms its
+        time-limit mechanism around every fetch and raises ``QueryInterrupted``
+        if a single chunk's computation exceeds it. This bounds a query that
+        hangs in the engine (a blocking sort/join before the first row) without
+        penalising a slow client between chunks. A well-behaved query is
+        otherwise bounded only by its own result size; an abandoned download is
+        reclaimed by the consumer tearing the generator down (``close()``) on
+        disconnect, which closes the dedicated connection. Other engine/query
+        errors surface as ``QueryError``.
+        """
+        raise NotImplementedError
+
     def introspector(self, db) -> "Introspector":
         """Return an :class:`Introspector` bound to ``db`` for schema queries."""
         raise NotImplementedError
@@ -348,6 +375,22 @@ class Introspector:
 
     async def get_table_definition(self, table, type_="table"):
         raise NotImplementedError
+
+    async def database_schema(self):
+        """Full schema for the database: the CREATE statements for every table
+        and view, concatenated. Composed from ``get_table_definition`` so it
+        works on any backend; ``SqliteIntrospector`` overrides it to preserve
+        its exact historical output."""
+        parts = []
+        for table in await self.table_names():
+            definition = await self.get_table_definition(table, "table")
+            if definition:
+                parts.append(definition)
+        for view in await self.view_names():
+            definition = await self.get_table_definition(view, "view")
+            if definition:
+                parts.append(definition)
+        return "\n".join(parts)
 
     async def attached_databases(self):
         raise NotImplementedError

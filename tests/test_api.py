@@ -605,6 +605,7 @@ async def test_settings_json(ds_client):
         "cache_size_kb": 0,
         "allow_csv_stream": True,
         "max_csv_mb": 100,
+        "max_csv_stream_page_size": 10000,
         "truncate_cells_html": 2048,
         "force_https_urls": False,
         "template_debug": False,
