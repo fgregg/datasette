@@ -157,10 +157,35 @@ class DuckDBBackend(Backend):
         import duckdb
 
         if db.is_memory:
-            return duckdb.connect(":memory:")
-        # read_only allows multiple concurrent reader connections (Datasette
-        # opens one per thread)
-        return duckdb.connect(db.path, read_only=not write)
+            conn = duckdb.connect(":memory:")
+        else:
+            # read_only allows multiple concurrent reader connections (Datasette
+            # opens one per thread)
+            conn = duckdb.connect(db.path, read_only=not write)
+        self._apply_memory_limit(conn, db)
+        return conn
+
+    def _apply_memory_limit(self, conn, db):
+        # Optional per-instance DuckDB memory_limit, from plugin config:
+        #
+        #   plugins:
+        #     datasette-duckdb:
+        #       memory_limit: 256MB
+        #
+        # Each database is its own DuckDB instance with an INDEPENDENT buffer
+        # pool. Uncapped, each instance defaults memory_limit to ~80% of host
+        # RAM (e.g. 1.5GiB on a 2GB box), so N instances collectively
+        # oversubscribe memory and the box OOMs under crawler load that touches
+        # many databases. Capping each instance bounds the aggregate working
+        # set. The buffer pool here is reloadable cache of the immutable .duckdb
+        # files, so the limit is enforced by cheap eviction (re-read), not by
+        # spilling; a single oversized query spills to temp_directory. Unset =>
+        # DuckDB default (no cap), preserving prior behaviour.
+        config = db.ds.plugin_config("datasette-duckdb") or {}
+        memory_limit = config.get("memory_limit")
+        if memory_limit:
+            # value is operator-supplied config, not user input
+            conn.execute("SET memory_limit=?", [str(memory_limit)])
 
     # crossdb_attach_limit inherits the base default (None): DuckDB has no
     # SQLITE_LIMIT_ATTACHED-style ceiling on the number of attached databases.
