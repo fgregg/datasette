@@ -17,6 +17,13 @@ from datasette.backends import (
 )
 from datasette.utils import Column
 
+# Shared-instance mode (plugins.datasette-duckdb.shared_instance). One DuckDB
+# instance for the whole process with every database ATTACHed; created lazily
+# under this lock. Module-level because backends are instantiated per-Database
+# but must all share the single instance. See DuckDBBackend.connect / #31.
+_MASTER = None
+_MASTER_LOCK = threading.Lock()
+
 
 class DuckDBRow:
     """Lightweight dual-access row (``row[i]`` and ``row["col"]``).
@@ -153,9 +160,35 @@ class DuckDBBackend(Backend):
         supports_explain=True,
     )
 
+    # Per-Database backend objects flip this in connect() based on plugin config;
+    # execute_query / stream_query read it to choose the cursor model.
+    _shared = False
+
     def connect(self, db, write=False):
         import duckdb
 
+        # Shared-instance mode (plugins.datasette-duckdb.shared_instance): route
+        # every database through ONE process-wide DuckDB instance with all dbs
+        # ATTACHed as catalogs, addressed per-cursor via USE. One global
+        # memory_limit bounds the whole process (vs N per-db instances each
+        # sizing to ~80% RAM and oversubscribing), and a single big operation
+        # (large CSV export / sort) can use the whole budget instead of being
+        # starved by a per-instance cap. See issue #31.
+        self._shared = self._shared_enabled(db.ds)
+        if self._shared:
+            master = self._get_master(db.ds)
+            cur = master.cursor()
+            if not db.is_memory:
+                # Bind this cursor's default catalog so datasette's unqualified
+                # table refs resolve to this database. USE is per-connection state
+                # and does NOT propagate to a sub-cursor, so execute_query /
+                # stream_query run directly on this cursor (never conn.cursor()).
+                # _memory keeps the home catalog ('memory') where every db is
+                # attached, so its qualified cross-db queries still resolve.
+                cur.execute('USE "{}"'.format(db.name.replace('"', '""')))
+            return cur
+
+        # Per-instance mode (default): one DuckDB instance per database.
         if db.is_memory:
             conn = duckdb.connect(":memory:")
         else:
@@ -164,6 +197,40 @@ class DuckDBBackend(Backend):
             conn = duckdb.connect(db.path, read_only=not write)
         self._apply_memory_limit(conn, db)
         return conn
+
+    def _shared_enabled(self, datasette):
+        config = datasette.plugin_config("datasette-duckdb") or {}
+        return bool(config.get("shared_instance"))
+
+    def _get_master(self, datasette):
+        # Lazily create the one shared :memory: instance and ATTACH every
+        # duckdb-backed database READ_ONLY as a catalog within it. Process-global
+        # (backends are per-Database), guarded by a lock. Configured once:
+        #   - memory_limit: the single global budget for the whole process
+        #   - threads=1: the box is 1 vCPU; more threads only multiply sort/agg
+        #     memory and worsen latency-fairness (measured), with no compute gain
+        #   - preserve_insertion_order=false: cheaper large sorts/exports
+        import duckdb
+
+        global _MASTER
+        with _MASTER_LOCK:
+            if _MASTER is None:
+                cfg = datasette.plugin_config("datasette-duckdb") or {}
+                m = duckdb.connect(":memory:")
+                if cfg.get("memory_limit"):
+                    m.execute("SET memory_limit=?", [str(cfg["memory_limit"])])
+                m.execute("SET threads=?", [int(cfg.get("threads") or 1)])
+                m.execute("SET preserve_insertion_order=false")
+                for name, d in datasette.databases.items():
+                    if d.is_memory or getattr(d.backend, "name", None) != self.name:
+                        continue
+                    m.execute(
+                        'ATTACH \'{}\' AS "{}" (READ_ONLY)'.format(
+                            d.path.replace("'", "''"), name.replace('"', '""')
+                        )
+                    )
+                _MASTER = m
+            return _MASTER
 
     def _apply_memory_limit(self, conn, db):
         # Optional per-instance DuckDB memory_limit, from plugin config:
@@ -191,6 +258,10 @@ class DuckDBBackend(Backend):
     # SQLITE_LIMIT_ATTACHED-style ceiling on the number of attached databases.
 
     def prepare_connection(self, conn, datasette, database_name):
+        # Shared-instance mode: catalogs are ATTACHed once on the master and the
+        # cursor's catalog is bound in connect() — nothing to do per-connection.
+        if self._shared_enabled(datasette):
+            return
         # We deliberately do NOT fire the prepare_connection plugin hook here:
         # those plugins assume a sqlite3 connection.
         if datasette.crossdb and database_name == "_memory":
@@ -223,7 +294,16 @@ class DuckDBBackend(Backend):
         from datasette.database import Results, QueryInterrupted, QueryError
 
         duck_sql, params = self.dialect.adapt_parameters(sql, params)
-        cursor = conn.cursor()
+        if self._shared:
+            # Shared instance: run on the USE'd cursor directly. A sub-cursor
+            # (conn.cursor()) would reset to the home catalog and lose the USE
+            # binding. Reusing the pooled cursor is leak-free — each execute()
+            # supersedes the prior prepared statement (validated: flat RSS).
+            cursor = conn
+            own_cursor = False
+        else:
+            cursor = conn.cursor()
+            own_cursor = True
         # Enforce the time limit with a watchdog: DuckDB has no progress
         # handler, but cursor.interrupt() from another thread cancels the
         # running query (raising InterruptException).
@@ -255,16 +335,18 @@ class DuckDBBackend(Backend):
         finally:
             if timer is not None:
                 timer.cancel()
-            # Close the cursor so DuckDB releases the prepared statement and its
-            # native result buffers immediately. `conn` is a long-lived pooled
-            # connection; DuckDB tracks child cursors on it, so an unclosed
-            # cursor per query accumulates native (C++) memory for the process
-            # lifetime — a slow RSS leak invisible to Python gc. `raw`/`columns`
-            # are already materialised above, so closing here is safe.
-            try:
-                cursor.close()
-            except Exception:
-                pass
+            # Close the per-query sub-cursor so DuckDB releases the prepared
+            # statement and its native result buffers immediately. `conn` is a
+            # long-lived pooled connection; DuckDB tracks child cursors on it, so
+            # an unclosed cursor per query accumulates native (C++) memory for the
+            # process lifetime — a slow RSS leak invisible to Python gc.
+            # `raw`/`columns` are already materialised above, so closing is safe.
+            # (Shared mode ran on the pooled cursor itself; do not close it.)
+            if own_cursor:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
         # Wrap tuples so downstream row["col"] and row[i] both work, sharing one
         # column->index map across the result rather than a dict per row.
         index = {c: i for i, c in enumerate(columns)}
@@ -276,7 +358,16 @@ class DuckDBBackend(Backend):
         from datasette.database import QueryInterrupted, QueryError
 
         duck_sql, params = self.dialect.adapt_parameters(sql, params)
-        cursor = conn.cursor()
+        if self._shared:
+            # Shared instance: the dedicated streaming connection is a master
+            # cursor with USE already bound (execute_stream → connect()). Run on
+            # it directly; a sub-cursor would lose the catalog. execute_stream
+            # closes this connection when the generator finishes.
+            cursor = conn
+            own_cursor = False
+        else:
+            cursor = conn.cursor()
+            own_cursor = True
 
         def guarded(fn):
             # DuckDB has no progress handler; cursor.interrupt() from a watchdog
@@ -310,33 +401,52 @@ class DuckDBBackend(Backend):
                     break
                 yield columns, [DuckDBRow(columns, index, r) for r in raw]
         finally:
-            # Release the cursor's prepared statement + native buffers when the
-            # generator finishes or is closed early (client disconnect →
-            # GeneratorExit). execute_stream also closes the dedicated
-            # connection, but close the cursor too so nothing lingers.
-            try:
-                cursor.close()
-            except Exception:
-                pass
+            # Release the sub-cursor's prepared statement + native buffers when
+            # the generator finishes or is closed early (client disconnect →
+            # GeneratorExit). execute_stream also closes the dedicated connection.
+            # (Shared mode ran on that dedicated cursor itself; execute_stream
+            # closes it — don't close it here.)
+            if own_cursor:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
 
     def introspector(self, db):
         return DuckDBIntrospector(db)
 
 
 class DuckDBIntrospector(Introspector):
+    def _cat(self, col):
+        # Shared-instance mode puts every database in ONE DuckDB instance, so
+        # information_schema / duckdb_*() metadata (which span ALL attached
+        # catalogs) must be scoped to the current catalog or a db page would list
+        # every other db's tables. Per-instance mode (each db its own instance)
+        # needs no scope — keep the query byte-identical. `col` is the catalog
+        # column for the metadata source (table_catalog / database_name /
+        # catalog_name).
+        shared = getattr(self, "_shared_cached", None)
+        if shared is None:
+            cfg = self.db.ds.plugin_config("datasette-duckdb") or {}
+            shared = bool(cfg.get("shared_instance"))
+            self._shared_cached = shared
+        return " and {} = current_database()".format(col) if shared else ""
+
     async def table_names(self):
         results = await self.db.execute(
             "select table_name from information_schema.tables "
-            "where table_schema = 'main' and table_type = 'BASE TABLE' "
-            "order by table_name"
+            "where table_schema = 'main' and table_type = 'BASE TABLE'"
+            + self._cat("table_catalog")
+            + " order by table_name"
         )
         return [r[0] for r in results.rows]
 
     async def view_names(self):
         results = await self.db.execute(
             "select table_name from information_schema.tables "
-            "where table_schema = 'main' and table_type = 'VIEW' "
-            "order by table_name"
+            "where table_schema = 'main' and table_type = 'VIEW'"
+            + self._cat("table_catalog")
+            + " order by table_name"
         )
         return [r[0] for r in results.rows]
 
@@ -344,7 +454,7 @@ class DuckDBIntrospector(Introspector):
         results = await self.db.execute(
             "select 1 from information_schema.tables "
             "where table_schema = 'main' and table_name = :t "
-            "and table_type = 'BASE TABLE'",
+            "and table_type = 'BASE TABLE'" + self._cat("table_catalog"),
             {"t": table},
         )
         return bool(results.rows)
@@ -353,7 +463,7 @@ class DuckDBIntrospector(Introspector):
         results = await self.db.execute(
             "select 1 from information_schema.tables "
             "where table_schema = 'main' and table_name = :t "
-            "and table_type = 'VIEW'",
+            "and table_type = 'VIEW'" + self._cat("table_catalog"),
             {"t": view},
         )
         return bool(results.rows)
@@ -361,8 +471,9 @@ class DuckDBIntrospector(Introspector):
     async def table_columns(self, table):
         results = await self.db.execute(
             "select column_name from information_schema.columns "
-            "where table_schema = 'main' and table_name = :t "
-            "order by ordinal_position",
+            "where table_schema = 'main' and table_name = :t"
+            + self._cat("table_catalog")
+            + " order by ordinal_position",
             {"t": table},
         )
         return [r[0] for r in results.rows]
@@ -371,7 +482,7 @@ class DuckDBIntrospector(Introspector):
         results = await self.db.execute(
             "select constraint_column_names from duckdb_constraints() "
             "where schema_name = 'main' and table_name = :t "
-            "and constraint_type = 'PRIMARY KEY'",
+            "and constraint_type = 'PRIMARY KEY'" + self._cat("database_name"),
             {"t": table},
         )
         if results.rows:
@@ -383,8 +494,9 @@ class DuckDBIntrospector(Introspector):
         results = await self.db.execute(
             "select ordinal_position, column_name, data_type, is_nullable, "
             "column_default from information_schema.columns "
-            "where table_schema = 'main' and table_name = :t "
-            "order by ordinal_position",
+            "where table_schema = 'main' and table_name = :t"
+            + self._cat("table_catalog")
+            + " order by ordinal_position",
             {"t": table},
         )
         columns = []
@@ -440,6 +552,7 @@ class DuckDBIntrospector(Introspector):
             "select table_name, constraint_column_names, referenced_table, "
             "referenced_column_names from duckdb_constraints() "
             "where schema_name = 'main' and constraint_type = 'FOREIGN KEY'"
+            + self._cat("database_name")
         )
         return [
             (tn, cols[0], other_table, other_cols[0])
@@ -474,7 +587,7 @@ class DuckDBIntrospector(Introspector):
         # table itself (the dialect builds the fts_main_<table>.match_bm25 call).
         results = await self.db.execute(
             "select schema_name from information_schema.schemata "
-            "where schema_name = :s",
+            "where schema_name = :s" + self._cat("catalog_name"),
             {"s": "fts_main_" + table},
         )
         return table if results.rows else None
@@ -492,7 +605,8 @@ class DuckDBIntrospector(Introspector):
         name_col = "view_name" if type_ == "view" else "table_name"
         results = await self.db.execute(
             f"select sql from {catalog} "
-            f"where schema_name = 'main' and {name_col} = :t",
+            f"where schema_name = 'main' and {name_col} = :t"
+            + self._cat("database_name"),
             {"t": table},
         )
         if not results.rows:
@@ -508,7 +622,8 @@ class DuckDBIntrospector(Introspector):
             index_results = await self.db.execute(
                 "select sql from duckdb_indexes() "
                 "where schema_name = 'main' and table_name = :t "
-                "and is_primary = false and sql is not null",
+                "and is_primary = false and sql is not null"
+                + self._cat("database_name"),
                 {"t": table},
             )
             for row in index_results.rows:
@@ -518,10 +633,16 @@ class DuckDBIntrospector(Introspector):
     async def attached_databases(self):
         from datasette.database import AttachedDatabase
 
-        # On the crossdb host (_memory) the other databases are ATTACHed; list
-        # them so the database page can show what's joinable. Exclude system/temp
-        # (internal) and the host's own catalog (current_database() -- 'memory'
-        # for the in-memory host). For a regular database this is empty.
+        # Only the crossdb host (_memory) reports attached databases. In
+        # shared-instance mode EVERY db shares one instance with all others
+        # ATTACHed, so without this guard a regular db page would list all 13
+        # other databases as "attached". In per-instance mode a regular db has
+        # nothing attached, so this early return is equivalent (just cheaper).
+        if not self.db.is_memory:
+            return []
+        # On the crossdb host the other databases are ATTACHed; list them so the
+        # database page can show what's joinable. Exclude system/temp (internal)
+        # and the host's own catalog (current_database() -- 'memory').
         results = await self.db.execute(
             "select database_name, path from duckdb_databases() "
             "where not internal and database_name != current_database() "
