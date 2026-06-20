@@ -73,7 +73,7 @@ from .views.table import (
 from .views.row import RowView, RowDeleteView, RowUpdateView
 from .renderer import json_renderer
 from .url_builder import Urls
-from .database import Database, QueryInterrupted
+from .database import Database, QueryInterrupted, QueryError
 from .backends.sqlite import SqliteBackend
 
 from .utils import (
@@ -1729,6 +1729,14 @@ class Datasette:
         try:
             results = await self.execute(database, sql, list(set(values)))
         except QueryInterrupted:
+            pass
+        except QueryError:
+            # Label expansion is best-effort cosmetic: a failed lookup must not
+            # 500 the page. DuckDB's strict typing raises a Conversion Error
+            # when the FK source values don't cleanly cast to the referenced
+            # column's type (e.g. a VARCHAR column with values like '00A'
+            # referencing an INTEGER key), where SQLite would loosely compare
+            # and simply not match. Degrade to unlabelled rather than error.
             pass
         else:
             for id, value in results:
