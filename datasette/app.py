@@ -623,16 +623,26 @@ class Datasette:
             )
         }
         # Delete stale entries for databases that are no longer attached
-        stale_databases = set(current_schema_versions.keys()) - set(
-            self.databases.keys()
-        )
-        for stale_db_name in stale_databases:
-            await internal_db.execute_write(
-                "DELETE FROM catalog_databases WHERE database_name = ?",
-                [stale_db_name],
+        # Only prune catalog entries for databases that are genuinely gone —
+        # and only once startup is complete. invoke_startup() calls
+        # _refresh_schemas() BEFORE the startup hooks run, but backend plugins
+        # (e.g. datasette-duckdb) register their databases IN a startup hook, so
+        # mid-startup self.databases is incomplete. Pruning then would delete a
+        # persisted/frozen internal catalog (--internal) for databases that
+        # simply aren't registered *yet*, forcing a full live re-introspection
+        # on first request and defeating the frozen-schema optimisation.
+        if self._startup_invoked:
+            stale_databases = set(current_schema_versions.keys()) - set(
+                self.databases.keys()
             )
+            for stale_db_name in stale_databases:
+                await internal_db.execute_write(
+                    "DELETE FROM catalog_databases WHERE database_name = ?",
+                    [stale_db_name],
+                )
         for database_name, db in self.databases.items():
             schema_version = await db.introspector.schema_version()
+            # Compare schema versions to see if we should skip it
             # Compare schema versions to see if we should skip it
             if schema_version == current_schema_versions.get(database_name):
                 continue
