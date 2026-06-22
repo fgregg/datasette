@@ -602,7 +602,12 @@ class QueryView(View):
 
         params_for_query = params
 
-        if not canned_query_write:
+        # `sql` is None on the blank query form (/db/-/query with no ?sql=);
+        # only validate + execute when there's actually a query. Upstream guards
+        # the same block with `if sql and not stored_query_write` — the backend
+        # refactor dropped the `if sql`, so the empty form 500'd on
+        # validate_sql_select(None).
+        if sql and not canned_query_write:
             try:
                 if not canned_query:
                     # For regular queries we only allow SELECT, plus other rules
@@ -781,25 +786,29 @@ class QueryView(View):
             # - No magic parameters, so no :_ in the SQL string
             edit_sql_url = None
             is_validated_sql = False
-            try:
-                validate_sql_select(sql)
-                is_validated_sql = True
-            except InvalidSql:
-                pass
-            if allow_execute_sql and is_validated_sql and ":_" not in sql:
-                edit_sql_url = (
-                    datasette.urls.database(database)
-                    + "/-/query"
-                    + "?"
-                    + urlencode(
-                        {
-                            **{
-                                "sql": sql,
-                            },
-                            **named_parameter_values,
-                        }
+            # Guard on sql: it's None on the blank query form, where
+            # validate_sql_select(None) and `":_" not in None` both raise.
+            # Upstream wraps this same block in `if sql:`.
+            if sql:
+                try:
+                    validate_sql_select(sql)
+                    is_validated_sql = True
+                except InvalidSql:
+                    pass
+                if allow_execute_sql and is_validated_sql and ":_" not in sql:
+                    edit_sql_url = (
+                        datasette.urls.database(database)
+                        + "/-/query"
+                        + "?"
+                        + urlencode(
+                            {
+                                **{
+                                    "sql": sql,
+                                },
+                                **named_parameter_values,
+                            }
+                        )
                     )
-                )
 
             async def query_actions():
                 query_actions = []

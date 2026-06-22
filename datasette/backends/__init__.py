@@ -33,6 +33,11 @@ def rewrite_named_parameters(sql, render):
 
     Returns ``(new_sql, names)`` — ``names`` is the placeholder names in order.
     """
+    # sql is None on the blank query form (/db/-/query with no ?sql=), where
+    # derive_named_parameters() still calls this to look for placeholders.
+    # Without this guard len(None) 500s every empty query page.
+    if not sql:
+        return sql or "", []
     out = []
     names = []
     i = 0
