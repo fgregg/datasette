@@ -225,7 +225,7 @@ class DuckDBBackend(Backend):
                     if d.is_memory or getattr(d.backend, "name", None) != self.name:
                         continue
                     m.execute(
-                        'ATTACH \'{}\' AS "{}" (READ_ONLY)'.format(
+                        "ATTACH '{}' AS \"{}\" (READ_ONLY)".format(
                             d.path.replace("'", "''"), name.replace('"', '""')
                         )
                     )
@@ -469,11 +469,15 @@ class DuckDBIntrospector(Introspector):
         return bool(results.rows)
 
     async def table_columns(self, table):
+        # pragma_table_info is a cheap single-table metadata lookup scoped to the
+        # current (USE'd) catalog. information_schema.columns is a computed view
+        # that, in shared-instance mode, scans EVERY attached catalog on each
+        # call — and the database landing page calls this once per table (282 for
+        # cats), so it was ~29s of information_schema scans vs <1s with pragma.
+        # Mirrors upstream datasette's PRAGMA table_info path; no _cat() scoping
+        # needed since pragma resolves against the current catalog.
         results = await self.db.execute(
-            "select column_name from information_schema.columns "
-            "where table_schema = 'main' and table_name = :t"
-            + self._cat("table_catalog")
-            + " order by ordinal_position",
+            "select name from pragma_table_info(:t) order by cid",
             {"t": table},
         )
         return [r[0] for r in results.rows]
@@ -490,26 +494,27 @@ class DuckDBIntrospector(Introspector):
         return []
 
     async def table_column_details(self, table):
-        pks = set(await self.primary_keys(table))
+        # One pragma_table_info call carries cid/name/type/notnull/default/pk, so
+        # this needs neither information_schema nor a separate primary_keys()
+        # query — both are per-table and both scan every attached catalog in
+        # shared-instance mode. populate_schema_tables calls this once per table,
+        # so the offline catalog build benefits too. (notnull/pk are booleans in
+        # DuckDB's pragma_table_info, vs SQLite's ints — truthiness handles both.)
         results = await self.db.execute(
-            "select ordinal_position, column_name, data_type, is_nullable, "
-            "column_default from information_schema.columns "
-            "where table_schema = 'main' and table_name = :t"
-            + self._cat("table_catalog")
-            + " order by ordinal_position",
+            'select cid, name, type, "notnull", dflt_value, pk '
+            "from pragma_table_info(:t) order by cid",
             {"t": table},
         )
         columns = []
         for r in results.rows:
-            name = r[1]
             columns.append(
                 Column(
                     cid=r[0],
-                    name=name,
+                    name=r[1],
                     type=r[2],
-                    notnull=1 if r[3] == "NO" else 0,
+                    notnull=1 if r[3] else 0,
                     default_value=r[4],
-                    is_pk=(1 if name in pks else 0),
+                    is_pk=1 if r[5] else 0,
                     hidden=0,
                 )
             )
