@@ -220,7 +220,10 @@ class ColumnFacet(Facet):
                             ),
                         }
                     )
-            except QueryInterrupted:
+            except (QueryInterrupted, QueryError):
+                # Drop a facet we can't probe (consistent with ArrayFacet /
+                # DateFacet.suggest). QueryError is the backend-agnostic
+                # equivalent of the sqlite3.OperationalError vanilla catches.
                 continue
         return suggested_facets
 

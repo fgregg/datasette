@@ -1519,7 +1519,16 @@ async def table_view_data(
         if not nofacet:
             # Run them in parallel
             facet_awaitables = [facet.facet_results() for facet in facet_instances]
-            facet_awaitable_results = await run_sequential(*facet_awaitables)
+            try:
+                facet_awaitable_results = await run_sequential(*facet_awaitables)
+            except (QueryError, InvalidSql) as e:
+                # A facet on a column the table doesn't have (e.g. a stale
+                # ?_facet= carried across tables, or a crawler) raises
+                # QueryError from the backend. Surface it as a 400 like the
+                # main query path above — vanilla datasette turns the
+                # equivalent sqlite3.OperationalError into a 400 here too —
+                # rather than letting it escape to handle_exception as a 500.
+                raise DatasetteError(str(e), title="Invalid SQL", status=400)
             for (
                 instance_facet_results,
                 instance_facets_timed_out,
