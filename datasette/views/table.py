@@ -1365,6 +1365,19 @@ async def table_view_data(
     # Execute the main query!
     try:
         results = await db.execute(sql, params, truncate=True, **extra_args)
+    except QueryInterrupted:
+        # The page query timed out (sql_time_limit_ms). On the DuckDB
+        # shared-instance backend a browse page over a large, pk-less table
+        # (`order by rowid limit N` -> full top-N, no index) can be starved
+        # past the limit under concurrent load and raise QueryInterrupted.
+        # That's overload, not an app crash, so surface it like QueryView does
+        # for ?sql= (database.py) — a clean retryable 400, not a bare 500.
+        raise DatasetteError(
+            "This page took too long to load and was interrupted — "
+            "the server may be busy. Try reloading in a moment.",
+            title="Query interrupted",
+            status=400,
+        )
     except (QueryError, InvalidSql) as e:
         raise DatasetteError(str(e), title="Invalid SQL", status=400)
 
