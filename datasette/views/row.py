@@ -1,5 +1,5 @@
 from datasette.utils.asgi import NotFound, Forbidden, Response
-from datasette.database import QueryInterrupted
+from datasette.database import QueryInterrupted, QueryError
 from datasette.events import UpdateRowEvent, DeleteRowEvent
 from datasette.resources import TableResource
 from .base import DataView, BaseView, _error
@@ -255,14 +255,35 @@ class RowView(DataView):
         )
         try:
             rows = list(await db.execute(sql, {"id": pk_values[0]}))
+            counts = list(rows[0])
         except QueryInterrupted:
             # Almost certainly hit the timeout
             return []
+        except QueryError:
+            # A strict-typing backend (DuckDB) raises a conversion error when the
+            # pk value doesn't cast to an incoming FK column's type (e.g. a
+            # VARCHAR pk like '00A' compared against an INTEGER fk column), where
+            # SQLite would loosely compare and simply match nothing. One bad
+            # column would otherwise fail the whole batch SELECT and 500 the row
+            # page, so re-run each count on its own and degrade the offending
+            # one to 0 — mirroring SQLite, where it would have been 0 anyway.
+            counts = []
+            for fk in foreign_keys:
+                one = "select count(*) from {table} where {column}=:id".format(
+                    table=db.dialect.escape_identifier(fk["other_table"]),
+                    column=db.dialect.escape_identifier(fk["other_column"]),
+                )
+                try:
+                    counts.append(
+                        list(await db.execute(one, {"id": pk_values[0]}))[0][0]
+                    )
+                except (QueryInterrupted, QueryError):
+                    counts.append(0)
 
         foreign_table_counts = dict(
             zip(
                 [(fk["other_table"], fk["other_column"]) for fk in foreign_keys],
-                list(rows[0]),
+                counts,
             )
         )
         foreign_key_tables = []
