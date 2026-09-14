@@ -890,3 +890,39 @@ async def test_database_close_is_idempotent(tmpdir):
     # Second call should be a no-op, not raise
     db.close()
     ds._internal_database.close()
+
+
+@pytest.mark.asyncio
+async def test_table_counts_ignores_inspect_names_that_are_not_tables(tmpdir):
+    # inspect-data.json can name things that are not tables of the database:
+    # a view whose count was put there on purpose (views have no cheap count),
+    # or a table dropped since the file was written. table_counts() drives the
+    # database page's table list, so those names must not appear there.
+    path = str(tmpdir / "inspected.db")
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        create table t (id integer primary key);
+        insert into t (id) values (1), (2);
+        create view v as select * from t;
+        """)
+    conn.close()
+    ds = Datasette(
+        [path],
+        immutables=[path],
+        inspect_data={
+            "inspected": {
+                "tables": {
+                    "t": {"count": 2},
+                    "v": {"count": 1000},
+                    "dropped": {"count": 5},
+                }
+            }
+        },
+    )
+    db = ds.get_database("inspected")
+    counts = await db.table_counts()
+    assert counts == {"t": 2}
+    # the raw inspect data is untouched, so a caller after the view's count
+    # (the table page) can still find it
+    assert ds.inspect_data["inspected"]["tables"]["v"]["count"] == 1000
+    ds._internal_database.close()

@@ -586,7 +586,21 @@ class Database:
 
     async def table_counts(self, limit=10):
         if not self.is_mutable and self.cached_table_counts is not None:
-            return self.cached_table_counts
+            # cached_table_counts comes straight from inspect-data.json, which
+            # can name things that are not tables of this database: a view whose
+            # count was put there deliberately (a view has no cheap count, so
+            # the table page's bounded query reports ">10,000 rows" without it),
+            # or a table dropped since the file was written. The database page
+            # turns this dict directly into its table list and then looks each
+            # name up in get_all_foreign_keys(), so an unfiltered dict lists a
+            # view twice -- once as a table, once as a view -- and 500s on the
+            # foreign-key lookup. Counts for non-tables stay available to the
+            # callers that want them, which read inspect_data themselves.
+            counts = self.cached_table_counts
+            table_names = set(await self.table_names())
+            if any(name not in table_names for name in counts):
+                return {k: v for k, v in counts.items() if k in table_names}
+            return counts
         # Try to get counts for each table, $limit timeout for each count
         counts = {}
         for table in await self.table_names():
