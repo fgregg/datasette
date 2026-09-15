@@ -196,6 +196,7 @@ class DuckDBBackend(Backend):
             # opens one per thread)
             conn = duckdb.connect(db.path, read_only=not write)
         self._apply_memory_limit(conn, db)
+        self._apply_external_access(conn, db.ds.plugin_config("datasette-duckdb") or {})
         return conn
 
     def _shared_enabled(self, datasette):
@@ -229,8 +230,45 @@ class DuckDBBackend(Backend):
                             d.path.replace("'", "''"), name.replace('"', '""')
                         )
                     )
+                # After the ATTACHes: disabling external access also disables
+                # ATTACH, and it is one-way.
+                self._apply_external_access(m, cfg)
                 _MASTER = m
             return _MASTER
+
+    def _apply_external_access(self, conn, config):
+        # Optional filesystem sandbox, from plugin config:
+        #
+        #   plugins:
+        #     datasette-duckdb:
+        #       external_access: false
+        #       allowed_directories: [/data]
+        #
+        # Datasette only lets SELECT/WITH through to the query endpoint, which
+        # keeps out SET, ATTACH, COPY and LOAD -- but DuckDB's table functions
+        # run inside a SELECT, so by default `read_text('/proc/self/environ')`,
+        # `read_csv('/etc/passwd')` and `glob('/**')` all work for anyone who
+        # can reach /-/query. `SET enable_external_access=false` turns file
+        # access (and extension loading, and further ATTACHes) off for the
+        # connection; `allowed_directories` re-opens exactly the listed
+        # prefixes, so views over Parquet under the data directory keep
+        # resolving while the rest of the filesystem does not. DuckDB rejects
+        # allowed_directories once access is disabled and refuses to re-enable
+        # it, so the order here is fixed and the setting is one-way for the
+        # life of the connection. Already-open database files (the connection's
+        # own, or catalogs attached before this runs) are unaffected. Unset =>
+        # DuckDB default (access on), preserving prior behaviour.
+        if config.get("external_access", True) is not False:
+            return
+        # values are operator-supplied config, not user input
+        dirs = config.get("allowed_directories") or []
+        if dirs:
+            conn.execute(
+                "SET allowed_directories=[{}]".format(
+                    ", ".join("'{}'".format(str(d).replace("'", "''")) for d in dirs)
+                )
+            )
+        conn.execute("SET enable_external_access=false")
 
     def _apply_memory_limit(self, conn, db):
         # Optional per-instance DuckDB memory_limit, from plugin config:
