@@ -1,2 +1,11 @@
 line-length = 160
 target-version = "py310"
+
+# This file shadows [tool.ruff] in pyproject.toml, so the rule selection has
+# to live here. Pinned to E/F/W: ruff 0.16 widened its default rule set and
+# the fork is not taking upstream's 600-lint mass-fix (e889403d) while it
+# still needs to merge cleanly with the DuckDB branches.
+[lint]
+select = ["E", "F", "W"]
+# Black owns line length (the 160 above is just the hint for other rules).
+ignore = ["E501"]
